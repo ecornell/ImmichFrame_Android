@@ -19,13 +19,26 @@ import androidx.preference.SwitchPreferenceCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.DateFormatSymbols
 import java.util.Locale
+import java.security.SecureRandom
 
 class SettingsFragment : PreferenceFragmentCompat() {
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.settings_view, rootKey)
         val chkUseWebView = findPreference<SwitchPreferenceCompat>("useWebView")
-        val chkBlurredBackground = findPreference<SwitchPreferenceCompat>("blurredBackground")
         val chkShowCurrentDate = findPreference<SwitchPreferenceCompat>("showCurrentDate")
+        val nativeDisplayPreferences = listOf(
+            findPreference<Preference>("frameBackground"),
+            findPreference<Preference>("frameScale"),
+            findPreference<Preference>("splitGapDp"),
+            findPreference<Preference>("overlayFadeSeconds"),
+            findPreference<Preference>("burnInEnabled"),
+            findPreference<Preference>("clockSizeSp"),
+            findPreference<Preference>("metadataSizeSp"),
+            findPreference<Preference>("overlayScrimAlpha"),
+            findPreference<Preference>("safeMarginDp"),
+            findPreference<Preference>("edgeFeatherDp"),
+            findPreference<Preference>("zoomFrameRate"),
+        )
         val chkActiveTimes = findPreference<SwitchPreferenceCompat>("activeTimes")
         val editActiveSchedule = findPreference<Preference>("active_schedule_edit")
         val adminActiveSchedule = findPreference<Preference>("active_schedule_admin")
@@ -36,11 +49,24 @@ class SettingsFragment : PreferenceFragmentCompat() {
         authPref?.setOnBindEditTextListener { editText ->
             editText.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
+        val rpcTokenPref = findPreference<EditTextPreference>("rpcToken")
+        rpcTokenPref?.setOnBindEditTextListener { editText ->
+            editText.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        findPreference<SwitchPreferenceCompat>("rpcEnabled")
+            ?.setOnPreferenceChangeListener { _, newValue ->
+                if (newValue as Boolean && rpcTokenPref?.text.isNullOrBlank()) {
+                    val bytes = ByteArray(24).also(SecureRandom()::nextBytes)
+                    rpcTokenPref?.text = bytes.joinToString("") { "%02x".format(it) }
+                    Toast.makeText(requireContext(), "A random RPC token was generated.", Toast.LENGTH_LONG).show()
+                }
+                true
+            }
 
         // Update visibility based on switches
         val useWebView = chkUseWebView?.isChecked ?: false
-        chkBlurredBackground?.isVisible = !useWebView
         chkShowCurrentDate?.isVisible = !useWebView
+        nativeDisplayPreferences.forEach { it?.isVisible = !useWebView }
         val activeTimes = chkActiveTimes?.isChecked ?: false
         editActiveSchedule?.isVisible = activeTimes
         adminActiveSchedule?.isVisible = activeTimes
@@ -50,8 +76,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
         // React to changes
         chkUseWebView?.setOnPreferenceChangeListener { _, newValue ->
             val value = newValue as Boolean
-            chkBlurredBackground?.isVisible = !value
             chkShowCurrentDate?.isVisible = !value
+            nativeDisplayPreferences.forEach { it?.isVisible = !value }
             //add android settings button
             true
         }
@@ -119,9 +145,18 @@ class SettingsFragment : PreferenceFragmentCompat() {
         btnClose?.setOnPreferenceClickListener {
             val url = PreferenceManager.getDefaultSharedPreferences(requireContext())
                 .getString("webview_url", "")?.trim()
+            val allowCleartext = PreferenceManager.getDefaultSharedPreferences(requireContext())
+                .getBoolean("allowCleartext", false)
             val urlPattern = Regex("^https?://.+")
             return@setOnPreferenceClickListener if (url.isNullOrEmpty() || !url.matches(urlPattern)) {
                 Toast.makeText(requireContext(), "Please enter a valid server URL.", Toast.LENGTH_LONG).show()
+                false
+            } else if (url.startsWith("http://", ignoreCase = true) && !allowCleartext) {
+                Toast.makeText(
+                    requireContext(),
+                    "Enable insecure HTTP explicitly, or configure an HTTPS server.",
+                    Toast.LENGTH_LONG,
+                ).show()
                 false
             } else {
                 activity?.setResult(Activity.RESULT_OK)

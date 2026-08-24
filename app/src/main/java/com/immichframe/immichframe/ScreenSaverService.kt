@@ -1,11 +1,10 @@
 package com.immichframe.immichframe
 
-import android.animation.ObjectAnimator
-import android.animation.PropertyValuesHolder
 import android.annotation.SuppressLint
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -22,6 +21,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ImageView
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.preference.PreferenceManager
@@ -40,30 +41,48 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import androidx.core.graphics.toColorInt
-import androidx.core.graphics.drawable.toDrawable
-import androidx.core.net.toUri
 
 class ScreenSaverService : DreamService() {
     private var webViewRetryScope: CoroutineScope? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private lateinit var webView: WebView
+    private var webView: WebView? = null
+    private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
-    private lateinit var txtPhotoInfo: TextView
+    private lateinit var photoInfoContainer: LinearLayout
+    private lateinit var txtPhotoInfoLeft: TextView
+    private lateinit var txtPhotoInfoRight: TextView
     private lateinit var txtDateTime: TextView
     private lateinit var serverSettings: Helpers.ServerSettings
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
     private var isWeatherTimerRunning = false
     private var useWebView = true
-    private var blurredBackground = true
+    private var frameBackground = FrameBackground.THUMBHASH
+    private var frameScale = FrameScale.FIT
+    private var splitGapPx = 10
+    private var overlayFadeSeconds = 0
+    private var burnInEnabled = true
+    private val burnInController = OverlayBurnInController()
+    private var clockSizeSp = 40
+    private var metadataSizeSp = 20
+    private var overlayScrimAlpha = 96
+    private var safeMarginDp = 24
+    private var edgeFeatherPx = 16
+    private var zoomFrameRate = 30
     private var showCurrentDate = true
     private var currentWeather = ""
     private var isImageTimerRunning = false
+    private var imageCall: Call<Helpers.ImageResponse>? = null
+    private var imageJob: Job? = null
+    @Volatile private var imageGeneration = 0L
     private val handler = Handler(Looper.getMainLooper())
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
-    private var portraitCache: Helpers.ImageResponse? = null
+    private var portraitCache: Helpers.PreparedImage? = null
+    private var portraitCacheGeneration = -1L
+    private val portraitCacheLock = Any()
+    private lateinit var framePresenter: NativeFramePresenter
     private val imageRunnable = object : Runnable {
         override fun run() {
             if (isImageTimerRunning) {
@@ -80,10 +99,6 @@ class ScreenSaverService : DreamService() {
             }
         }
     }
-    private var isShowingFirst = true
-    private var zoomAnimator: ObjectAnimator? = null
-
-
     @SuppressLint("ClickableViewAccessibility")
     override fun onDreamingStarted() {
         super.onDreamingStarted()
@@ -91,18 +106,14 @@ class ScreenSaverService : DreamService() {
         isFullscreen = true
         isInteractive = true
         setContentView(R.layout.screen_saver_view)
-        webView = findViewById(R.id.webView)
-        webView.setBackgroundColor(Color.BLACK)
-        webView.loadUrl("about:blank")
+        webViewContainer = findViewById(R.id.webViewContainer)
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
-        txtPhotoInfo = findViewById(R.id.txtPhotoInfo)
+        framePresenter = NativeFramePresenter(imageView1, imageView2, handler)
+        photoInfoContainer = findViewById(R.id.photoInfoContainer)
+        txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
+        txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
         txtDateTime = findViewById(R.id.txtDateTime)
-
-        webView.setOnTouchListener { _, _ ->
-            finish()
-            true
-        }
 
         acquireWakeLock()
         loadSettings()
@@ -110,9 +121,11 @@ class ScreenSaverService : DreamService() {
 
     override fun onDreamingStopped() {
         super.onDreamingStopped()
+        if (::framePresenter.isInitialized) framePresenter.clear()
         webViewRetryScope?.cancel()
         webViewRetryScope = null
         stopImageTimer()
+        destroyWebView()
         releaseWakeLock()
         handler.removeCallbacksAndMessages(null)
     }
@@ -140,9 +153,9 @@ class ScreenSaverService : DreamService() {
     private fun previousAction() {
         if (useWebView) {
             // Simulate a key press
-            webView.requestFocus()
+            webView?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
-            webView.dispatchKeyEvent(event)
+            webView?.dispatchKeyEvent(event)
         } else {
             val safePreviousImage = previousImage
             if (safePreviousImage != null) {
@@ -156,9 +169,9 @@ class ScreenSaverService : DreamService() {
     private fun nextAction() {
         if (useWebView) {
             // Simulate a key press
-            webView.requestFocus()
+            webView?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
-            webView.dispatchKeyEvent(event)
+            webView?.dispatchKeyEvent(event)
         } else {
             stopImageTimer()
             getNextImage()
@@ -166,130 +179,109 @@ class ScreenSaverService : DreamService() {
         }
     }
 
-    private fun showImage(imageResponse: Helpers.ImageResponse) {
-        CoroutineScope(Dispatchers.IO).launch {
-            //get the window size
-            val decorView = window.decorView
-            val width = decorView.width
-            val height = decorView.height
-            val maxSize = maxOf(width, height)
-
-            var randomBitmap = Helpers.decodeBitmapFromBytes(imageResponse.randomImageBase64)
-            val thumbHashBitmap = Helpers.decodeBitmapFromBytes(imageResponse.thumbHashImageBase64)
-            var isMerged = false
-
-            val isPortrait = randomBitmap.height > randomBitmap.width
-            if (isPortrait && serverSettings.layout == "splitview") {
-                if (portraitCache != null) {
-                    var decodedPortraitImageBitmap =
-                        Helpers.decodeBitmapFromBytes(portraitCache!!.randomImageBase64)
-                    decodedPortraitImageBitmap =
-                        Helpers.reduceBitmapQuality(decodedPortraitImageBitmap, maxSize)
-                    randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize)
-
-                    val colorString =
-                        serverSettings.primaryColor?.takeIf { it.isNotBlank() } ?: "#FFFFFF"
-                    val parsedColor = colorString.toColorInt()
-
-                    randomBitmap =
-                        Helpers.mergeImages(decodedPortraitImageBitmap, randomBitmap, parsedColor)
-                    isMerged = true
-
-                    decodedPortraitImageBitmap.recycle()
-                } else {
-                    portraitCache = imageResponse
-                    getNextImage()
+    private fun showImage(
+        imageResponse: Helpers.ImageResponse,
+        persist: Boolean = true,
+        afterPresented: (() -> Unit)? = null,
+    ) {
+        val scope = webViewRetryScope ?: return
+        val generation = ++imageGeneration
+        imageJob?.cancel()
+        imageJob = scope.launch(Dispatchers.IO) {
+            var rendered: RenderedFrame? = null
+            var handedOff = false
+            try {
+                val width = window.decorView.width.coerceAtLeast(1)
+                val height = window.decorView.height.coerceAtLeast(1)
+                val prepared = Helpers.prepareImage(imageResponse)
+                if (generation != imageGeneration) return@launch
+                val isPortrait = prepared.height > prepared.width
+                var first = prepared
+                var second: Helpers.PreparedImage? = null
+                var waitingForPair = false
+                synchronized(portraitCacheLock) {
+                    if (generation != imageGeneration) return@launch
+                    if (isPortrait && serverSettings.layout == "splitview") {
+                        val cached = portraitCache
+                        if (cached != null && portraitCacheGeneration == generation - 1L) {
+                            first = cached
+                            second = prepared
+                            portraitCache = null
+                            portraitCacheGeneration = -1L
+                        } else {
+                            portraitCache = prepared
+                            portraitCacheGeneration = generation
+                            waitingForPair = true
+                        }
+                    } else {
+                        portraitCache = null
+                        portraitCacheGeneration = -1L
+                    }
+                }
+                if (waitingForPair) {
+                    handler.postDelayed({ if (generation == imageGeneration) getNextImage() }, 100L)
                     return@launch
                 }
-            } else {
-                randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize * 2)
-            }
-
-            withContext(Dispatchers.Main) {
-                updateUI(randomBitmap, thumbHashBitmap, isMerged, imageResponse)
+                val gapColor = runCatching {
+                    (serverSettings.primaryColor?.takeIf(String::isNotBlank) ?: "#000000").toColorInt()
+                }.getOrDefault(Color.BLACK)
+                rendered = FrameRenderer.render(
+                    width, height, first, second, frameScale, frameBackground, splitGapPx, gapColor,
+                    edgeFeatherPx,
+                )
+                withContext(Dispatchers.Main) {
+                    if (generation == imageGeneration) {
+                        updateUI(rendered)
+                        handedOff = true
+                        afterPresented?.invoke()
+                    }
+                }
+                if (persist && generation == imageGeneration) {
+                    CachedImageStore.writeIfStale(applicationContext, prepared)
+                }
+            } finally {
+                if (!handedOff) rendered?.bitmap?.takeUnless { it.isRecycled }?.recycle()
             }
         }
     }
 
-    private fun updateUI(
-        finalImage: Bitmap,
-        thumbHashBitmap: Bitmap,
-        isMerged: Boolean,
-        imageResponse: Helpers.ImageResponse
-    ) {
-        val imageViewOld = if (isShowingFirst) imageView1 else imageView2
-        val imageViewNew = if (isShowingFirst) imageView2 else imageView1
-
-        zoomAnimator?.cancel()
-        imageViewNew.alpha = 0f
-        imageViewNew.scaleX = 1f
-        imageViewNew.scaleY = 1f
-        imageViewNew.setImageBitmap(finalImage)
-        imageViewNew.visibility = View.VISIBLE
-
-        if (blurredBackground) {
-            imageViewNew.background = thumbHashBitmap.toDrawable(resources)
-        } else {
-            imageViewNew.background = null
+    private fun updateUI(frame: RenderedFrame) {
+        framePresenter.present(
+            frame = frame,
+            transitionMillis = (serverSettings.transitionDuration * 1_000).toLong(),
+            zoomEnabled = serverSettings.imageZoom,
+            zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
+            zoomFramesPerSecond = zoomFrameRate,
+        ) {
+            updatePhotoInfo(it.left, it.right)
+            val distance = if (burnInEnabled) 12f else 0f
+            val (x, y) = burnInController.offset(System.currentTimeMillis() / 300_000L, distance)
+            txtDateTime.translationX = x
+            txtDateTime.translationY = y
+            photoInfoContainer.translationX = -x
+            photoInfoContainer.translationY = -y
+            updateDateTimeWeather()
         }
-
-        imageViewNew.animate()
-            .alpha(1f)
-            .setDuration((serverSettings.transitionDuration * 1000).toLong())
-            .withEndAction {
-                if (serverSettings.imageZoom) {
-                    startZoomAnimation(imageViewNew)
-                }
-            }
-            .start()
-
-        imageViewOld.animate()
-            .alpha(0f)
-            .setDuration((serverSettings.transitionDuration * 1000).toLong())
-            .withEndAction {
-                imageViewOld.visibility = View.GONE
-            }
-            .start()
-
-        // Toggle active ImageView
-        isShowingFirst = !isShowingFirst
-
-        if (isMerged) {
-            val mergedPhotoDate =
-                if (portraitCache!!.photoDate.isNotEmpty() || imageResponse.photoDate.isNotEmpty()) {
-                    "${portraitCache!!.photoDate} | ${imageResponse.photoDate}"
-                } else {
-                    ""
-                }
-
-            val mergedImageLocation =
-                if (portraitCache!!.imageLocation.isNotEmpty() || imageResponse.imageLocation.isNotEmpty()) {
-                    "${portraitCache!!.imageLocation} | ${imageResponse.imageLocation}"
-                } else {
-                    ""
-                }
-
-            updatePhotoInfo(mergedPhotoDate, mergedImageLocation)
-            portraitCache = null
-        } else {
-            updatePhotoInfo(imageResponse.photoDate, imageResponse.imageLocation)
-        }
-
-        updateDateTimeWeather()
     }
 
-    private fun updatePhotoInfo(photoDate: String, photoLocation: String) {
-        if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
-            val photoInfo = buildString {
-                if (serverSettings.showPhotoDate && photoDate.isNotEmpty()) {
-                    append(photoDate)
-                }
-                if (serverSettings.showImageLocation && photoLocation.isNotEmpty()) {
-                    if (isNotEmpty()) append("\n")
-                    append(photoLocation)
-                }
+    private fun updatePhotoInfo(left: FrameMeta, right: FrameMeta?) {
+        fun text(meta: FrameMeta) = buildString {
+            if (serverSettings.showPhotoDate && meta.date.isNotEmpty()) append(meta.date)
+            if (serverSettings.showImageLocation && meta.location.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append(meta.location)
             }
-            txtPhotoInfo.text = photoInfo
+        }
+        val leftText = if (right == null) "" else text(left)
+        val rightText = text(right ?: left)
+        txtPhotoInfoLeft.text = leftText
+        txtPhotoInfoRight.text = rightText
+        txtPhotoInfoLeft.visibility = if (leftText.isBlank()) View.GONE else View.VISIBLE
+        txtPhotoInfoRight.visibility = if (rightText.isBlank()) View.GONE else View.VISIBLE
+        photoInfoContainer.animate().cancel()
+        photoInfoContainer.alpha = 1f
+        if (overlayFadeSeconds > 0) {
+            photoInfoContainer.animate().alpha(0f).setStartDelay(overlayFadeSeconds * 1000L).start()
         }
     }
 
@@ -332,11 +324,15 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun getNextImage() {
-        apiService.getImageData().enqueue(object : Callback<Helpers.ImageResponse> {
+        if (imageCall?.isExecuted == true || imageJob?.isActive == true || !::apiService.isInitialized) return
+        val call = apiService.getImageData()
+        imageCall = call
+        call.enqueue(object : Callback<Helpers.ImageResponse> {
             override fun onResponse(
                 call: Call<Helpers.ImageResponse>,
                 response: Response<Helpers.ImageResponse>
             ) {
+                imageCall = null
                 if (response.isSuccessful) {
                     val imageResponse = response.body()
                     if (imageResponse != null) {
@@ -354,12 +350,7 @@ class ScreenSaverService : DreamService() {
             }
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
-                t.printStackTrace()
-                Toast.makeText(
-                    applicationContext,
-                    "Failed to load image: ${t.localizedMessage}",
-                    Toast.LENGTH_SHORT
-                ).show()
+                imageCall = null
             }
         })
     }
@@ -373,18 +364,12 @@ class ScreenSaverService : DreamService() {
 
     private fun stopImageTimer() {
         isImageTimerRunning = false
+        if (::framePresenter.isInitialized) framePresenter.pauseZoom()
         handler.removeCallbacks(imageRunnable)
-    }
-
-    private fun startZoomAnimation(imageView: ImageView) {
-        zoomAnimator?.cancel()
-        zoomAnimator = ObjectAnimator.ofPropertyValuesHolder(
-            imageView,
-            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.2f),
-            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.2f)
-        )
-        zoomAnimator?.duration = (serverSettings.interval * 1000).toLong()
-        zoomAnimator?.start()
+        imageCall?.cancel()
+        imageCall = null
+        imageJob?.cancel()
+        imageJob = null
     }
 
     private fun getWeather() {
@@ -411,7 +396,7 @@ class ScreenSaverService : DreamService() {
     private fun getServerSettings(
         onSuccess: (Helpers.ServerSettings) -> Unit,
         onFailure: (Throwable) -> Unit,
-        maxRetries: Int = 18,
+        maxRetries: Int = Int.MAX_VALUE,
         retryDelayMillis: Long = 5000
     ) {
         var retryCount = 0
@@ -441,12 +426,7 @@ class ScreenSaverService : DreamService() {
                 private fun handleFailure(t: Throwable) {
                     if (retryCount < maxRetries) {
                         retryCount++
-                        Toast.makeText(
-                            this@ScreenSaverService,
-                            "Retrying to fetch server settings... Attempt $retryCount of $maxRetries",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        handler.postDelayed({
                             attemptFetch()
                         }, retryDelayMillis)
                     } else {
@@ -462,31 +442,37 @@ class ScreenSaverService : DreamService() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        blurredBackground = prefs.getBoolean("blurredBackground", true)
+        frameBackground = runCatching {
+            FrameBackground.valueOf(prefs.getString("frameBackground", "THUMBHASH")!!)
+        }.getOrDefault(FrameBackground.THUMBHASH)
+        frameScale = runCatching {
+            FrameScale.valueOf(prefs.getString("frameScale", "FIT")!!)
+        }.getOrDefault(FrameScale.FIT)
+        splitGapPx = (prefs.getInt("splitGapDp", 8) * resources.displayMetrics.density).toInt()
+        overlayFadeSeconds = prefs.getInt("overlayFadeSeconds", 0)
+        burnInEnabled = prefs.getBoolean("burnInEnabled", true)
+        clockSizeSp = prefs.getInt("clockSizeSp", 40)
+        metadataSizeSp = prefs.getInt("metadataSizeSp", 20)
+        overlayScrimAlpha = prefs.getInt("overlayScrimAlpha", 96)
+        safeMarginDp = prefs.getInt("safeMarginDp", 24)
+        edgeFeatherPx = (prefs.getInt("edgeFeatherDp", 16) * resources.displayMetrics.density).toInt()
+        zoomFrameRate = prefs.getInt("zoomFrameRate", 30).coerceIn(10, 60)
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         var savedUrl = prefs.getString("webview_url", "") ?: ""
-        useWebView = prefs.getBoolean("useWebView", true)
+        useWebView = prefs.getBoolean("useWebView", false)
         val authSecret = prefs.getString("authSecret", "") ?: ""
 
-        webView.visibility = if (useWebView) View.VISIBLE else View.GONE
+        webViewContainer.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
         imageView2.visibility = if (useWebView) View.GONE else View.VISIBLE
-        txtPhotoInfo.visibility = View.GONE //enabled in onSettingsLoaded based on server settings
+        photoInfoContainer.visibility = View.GONE
         txtDateTime.visibility = View.GONE //enabled in onSettingsLoaded based on server settings
 
         if (useWebView) {
-            savedUrl = if (authSecret.isNotEmpty()) {
-                savedUrl.toUri()
-                    .buildUpon()
-                    .appendQueryParameter("authsecret", authSecret)
-                    .build()
-                    .toString()
-            } else {
-                savedUrl
-            }
+            val activeWebView = ensureWebView()
             handler.removeCallbacks(imageRunnable)
             handler.removeCallbacks(weatherRunnable)
-            webView.webViewClient = object : WebViewClient() {
+            activeWebView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
                     request: WebResourceRequest?
@@ -518,15 +504,16 @@ class ScreenSaverService : DreamService() {
                         }, 500)
                     }
                     Handler(Looper.getMainLooper()).postDelayed({
-                        webView.loadUrl(savedUrl)
+                        activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
                     }, 5000)
                 }
             }
-            webView.settings.javaScriptEnabled = true
-            webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
-            webView.settings.domStorageEnabled = true
-            loadWebViewWithRetry(savedUrl)
+            activeWebView.settings.javaScriptEnabled = true
+            activeWebView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+            activeWebView.settings.domStorageEnabled = true
+            loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
+            destroyWebView()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             getServerSettings(
@@ -555,23 +542,26 @@ class ScreenSaverService : DreamService() {
             imageView2.scaleType = ImageView.ScaleType.FIT_CENTER
         }
         if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
-            txtPhotoInfo.visibility = View.VISIBLE
-            txtPhotoInfo.textSize =
-                Helpers.cssFontSizeToSp(serverSettings.baseFontSize, this)
+            photoInfoContainer.visibility = View.VISIBLE
+            val size = metadataSizeSp.toFloat()
+            txtPhotoInfoLeft.textSize = size
+            txtPhotoInfoRight.textSize = size
             if (serverSettings.primaryColor != null) {
-                txtPhotoInfo.setTextColor(
-                    runCatching { serverSettings.primaryColor!!.toColorInt() }
-                        .getOrDefault(Color.WHITE)
-                )
+                val color = runCatching { serverSettings.primaryColor!!.toColorInt() }.getOrDefault(Color.WHITE)
+                txtPhotoInfoLeft.setTextColor(color)
+                txtPhotoInfoRight.setTextColor(color)
             } else {
-                txtPhotoInfo.setTextColor(Color.WHITE)
+                txtPhotoInfoLeft.setTextColor(Color.WHITE)
+                txtPhotoInfoRight.setTextColor(Color.WHITE)
             }
+            applyOverlayStyle()
         } else {
-            txtPhotoInfo.visibility = View.GONE
+            photoInfoContainer.visibility = View.GONE
         }
         if (serverSettings.showClock) {
             txtDateTime.visibility = View.VISIBLE
-            txtDateTime.textSize = Helpers.cssFontSizeToSp(serverSettings.baseFontSize, this)
+            txtDateTime.textSize = clockSizeSp / 2f
+            txtDateTime.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             if (serverSettings.primaryColor != null) {
                 txtDateTime.setTextColor(
                     runCatching { serverSettings.primaryColor!!.toColorInt() }
@@ -580,11 +570,20 @@ class ScreenSaverService : DreamService() {
             } else {
                 txtDateTime.setTextColor(Color.WHITE)
             }
+            applyOverlayStyle()
         } else {
             txtDateTime.visibility = View.GONE
         }
 
-        getNextImage()
+        val cachedImage = if (currentImage == null) CachedImageStore.read(applicationContext) else null
+        if (cachedImage != null) {
+            cachedImage.let {
+                currentImage = it
+                showImage(it, persist = false, afterPresented = ::getNextImage)
+            }
+        } else {
+            getNextImage()
+        }
         startImageTimer()
 
         if (serverSettings.showWeatherDescription) {
@@ -624,7 +623,8 @@ class ScreenSaverService : DreamService() {
     private fun loadWebViewWithRetry(
         url: String,
         attempt: Int = 1,
-        maxAttempts: Int = 36
+        maxAttempts: Int = Int.MAX_VALUE,
+        headers: Map<String, String> = emptyMap(),
     ) {
         webViewRetryScope?.launch {
             val reachable = withContext(Dispatchers.IO) {
@@ -632,7 +632,7 @@ class ScreenSaverService : DreamService() {
             }
 
             if (reachable) {
-                webView.loadUrl(url)
+                webView?.loadUrl(url, headers)
             } else if (attempt <= maxAttempts) {
                 Toast.makeText(
                     this@ScreenSaverService,
@@ -641,7 +641,7 @@ class ScreenSaverService : DreamService() {
                 ).show()
 
                 delay(5_000)
-                loadWebViewWithRetry(url, attempt + 1, maxAttempts)
+                loadWebViewWithRetry(url, attempt + 1, maxAttempts, headers)
             } else {
                 Toast.makeText(
                     this@ScreenSaverService,
@@ -649,8 +649,67 @@ class ScreenSaverService : DreamService() {
                     Toast.LENGTH_LONG
                 ).show()
 
-                webView.loadUrl(url)
+                webView?.loadUrl(url, headers)
             }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun ensureWebView(): WebView {
+        webView?.let { return it }
+        return WebView(this).also { view ->
+            view.setBackgroundColor(Color.BLACK)
+            view.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+            view.setOnTouchListener { _, _ ->
+                finish()
+                true
+            }
+            webViewContainer.addView(view)
+            webView = view
+        }
+    }
+
+    private fun destroyWebView() {
+        webView?.let { view ->
+            view.stopLoading()
+            view.loadUrl("about:blank")
+            view.clearHistory()
+            webViewContainer.removeView(view)
+            view.destroy()
+        }
+        webView = null
+    }
+
+    private fun applyOverlayStyle() {
+        val density = resources.displayMetrics.density
+        val horizontal = (12 * density).toInt()
+        val vertical = (6 * density).toInt()
+        val radius = 10 * density
+        fun style(view: TextView, alpha: Int = overlayScrimAlpha) {
+            val color = view.currentTextColor
+            val luminance = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
+            val scrim = if (luminance >= 128) Color.BLACK else Color.WHITE
+            view.background = GradientDrawable().apply {
+                setColor(Color.argb(alpha.coerceIn(0, 255), Color.red(scrim), Color.green(scrim), Color.blue(scrim)))
+                cornerRadius = radius
+            }
+            view.setPadding(horizontal, vertical, horizontal, vertical)
+        }
+        style(txtDateTime)
+        val metadataAlpha = (overlayScrimAlpha * 0.8f).toInt()
+        style(txtPhotoInfoLeft, metadataAlpha)
+        style(txtPhotoInfoRight, metadataAlpha)
+        val margin = (safeMarginDp * density).toInt()
+        (txtDateTime.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.setMargins(margin, margin, margin, margin)
+            txtDateTime.layoutParams = it
+        }
+        (photoInfoContainer.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.setMargins(margin, margin, margin, margin)
+            photoInfoContainer.layoutParams = it
         }
     }
 }

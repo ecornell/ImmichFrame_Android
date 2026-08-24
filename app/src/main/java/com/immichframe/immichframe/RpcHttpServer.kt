@@ -3,6 +3,7 @@ package com.immichframe.immichframe
 import fi.iki.elonen.NanoHTTPD
 
 class RpcHttpServer(
+    private val expectedToken: () -> String,
     private val onFrameActiveCommand: (Boolean) -> Unit,
     private val onNextCommand: () -> Unit,
     private val onPreviousCommand: () -> Unit,
@@ -10,8 +11,19 @@ class RpcHttpServer(
     private val onSettingsCommand: () -> Unit,
     private val onBrightnessCommand: (Float) -> Unit,
 ) : NanoHTTPD(53287) {
+    private val rateLimiter = SlidingWindowRateLimiter()
 
     override fun serve(session: IHTTPSession): Response {
+        if (!rateLimiter.allow()) {
+            return newFixedLengthResponse(Response.Status.TOO_MANY_REQUESTS, MIME_PLAINTEXT, "Rate limited")
+        }
+        if (session.method != Method.POST) {
+            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "POST required")
+        }
+        val supplied = RpcSecurity.bearerToken(session.headers["authorization"])
+        if (!RpcSecurity.authorized(expectedToken(), supplied)) {
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        }
         return when (session.uri) {
             // "/dim" and "/undim" are kept as aliases for backwards compatibility
             "/off", "/dim" -> {

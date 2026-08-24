@@ -33,9 +33,17 @@ android {
         targetSdk = 36
         versionCode = 50
         versionName = "1.0.50.0"
+        manifestPlaceholders["appLabel"] = "ImmichFrame"
+        manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            manifestPlaceholders["appLabel"] = "ImmichFrame Debug"
+            manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -77,4 +85,5 @@ dependencies {
     implementation(libs.retrofitgson)
     implementation(libs.nanohttpd)
     implementation(libs.androidx.preference)
+    testImplementation("junit:junit:4.13.2")
 }

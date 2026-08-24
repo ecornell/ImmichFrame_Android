@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="frame_background_entries">
+        <item>Soft photo background</item>
+        <item>Average photo color</item>
+        <item>Black</item>
+    </string-array>
+    <string-array name="frame_background_values">
+        <item>THUMBHASH</item>
+        <item>AVERAGE</item>
+        <item>BLACK</item>
+    </string-array>
+    <string-array name="frame_scale_entries">
+        <item>Fit entire photo</item>
+        <item>Fill slot (crop edges)</item>
+    </string-array>
+    <string-array name="frame_scale_values">
+        <item>FIT</item>
+        <item>CROP</item>
+    </string-array>
+</resources>

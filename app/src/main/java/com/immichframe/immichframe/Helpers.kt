@@ -82,28 +82,42 @@ object Helpers {
         return result
     }
 
-    fun decodeBitmapFromBytes(data: String): Bitmap {
+    fun decodeBitmapFromBytes(data: String, maxDimension: Int = Int.MAX_VALUE): Bitmap {
         val decodedImage = Base64.decode(data, Base64.DEFAULT)
-
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(decodedImage, 0, decodedImage.size, bounds)
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.RGB_565
+            inSampleSize = if (maxDimension == Int.MAX_VALUE) 1 else {
+                decodeSampleSize(bounds.outWidth, bounds.outHeight, maxDimension)
+            }
         }
+        return requireNotNull(BitmapFactory.decodeByteArray(decodedImage, 0, decodedImage.size, options)) {
+            "Invalid image payload"
+        }
+    }
 
-        return BitmapFactory.decodeByteArray(decodedImage, 0, decodedImage.size, options)
+    fun imageDimensions(data: String): Pair<Int, Int> {
+        val decoded = Base64.decode(data, Base64.DEFAULT)
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(decoded, 0, decoded.size, options)
+        return options.outWidth.coerceAtLeast(1) to options.outHeight.coerceAtLeast(1)
     }
 
     fun reduceBitmapQuality(bitmap: Bitmap, maxSize: Int = 1000): Bitmap {
         val width = bitmap.width
         val height = bitmap.height
+        val (newWidth, newHeight) = scaledDimensions(width, height, maxSize)
+        if (newWidth == width && newHeight == height) return bitmap
+        return bitmap.scale(newWidth, newHeight)
+    }
 
-        // Calculate new dimensions while maintaining aspect ratio
-        val scaleFactor = maxSize.toFloat() / width.coerceAtLeast(height)
-        val newWidth = (width * scaleFactor).toInt()
-        val newHeight = (height * scaleFactor).toInt()
-
-        val resizedBitmap = bitmap.scale(newWidth, newHeight)
-
-        return resizedBitmap
+    fun scaledDimensions(width: Int, height: Int, maxSize: Int): Pair<Int, Int> {
+        require(width > 0 && height > 0 && maxSize > 0)
+        if (width <= maxSize && height <= maxSize) return width to height
+        val factor = maxSize.toFloat() / maxOf(width, height)
+        return (width * factor).toInt().coerceAtLeast(1) to
+            (height * factor).toInt().coerceAtLeast(1)
     }
 
     data class ImageResponse(
@@ -112,6 +126,39 @@ object Helpers {
         val photoDate: String,
         val imageLocation: String
     )
+
+    data class PreparedImage(
+        val response: ImageResponse,
+        val encodedBytes: ByteArray,
+        val width: Int,
+        val height: Int,
+    )
+
+    fun prepareImage(response: ImageResponse): PreparedImage {
+        val bytes = Base64.decode(response.randomImageBase64, Base64.DEFAULT)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Invalid image payload" }
+        return PreparedImage(response, bytes, bounds.outWidth, bounds.outHeight)
+    }
+
+    internal fun decodeSampleSize(width: Int, height: Int, targetDimension: Int): Int {
+        require(width > 0 && height > 0 && targetDimension > 0)
+        var sample = 1
+        val largest = maxOf(width, height)
+        while (largest / (sample * 2) >= targetDimension) sample *= 2
+        return sample
+    }
+
+    fun decodePreparedBitmap(image: PreparedImage, targetDimension: Int): Bitmap {
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inSampleSize = decodeSampleSize(image.width, image.height, targetDimension)
+        }
+        return requireNotNull(
+            BitmapFactory.decodeByteArray(image.encodedBytes, 0, image.encodedBytes.size, options),
+        ) { "Invalid image payload" }
+    }
 
     data class ServerSettings(
         val margin: String,
@@ -162,7 +209,11 @@ object Helpers {
     fun createRetrofit(baseUrl: String, authSecret: String): Retrofit {
         val normalizedBaseUrl = if (!baseUrl.endsWith("/")) "$baseUrl/" else baseUrl
 
-        val client = OkHttpClient.Builder().addInterceptor { chain ->
+        val client = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
             val originalRequest = chain.request()
 
             val request = if (authSecret.isNotEmpty()) {

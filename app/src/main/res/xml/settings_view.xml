@@ -1,4 +1,5 @@
-<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory android:title="Connection Settings">
         <EditTextPreference
@@ -10,17 +11,93 @@
             android:defaultValue=""
             android:key="authSecret"
             android:title="Authorization Secret" />
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="allowCleartext"
+            android:summary="Only enable for a trusted LAN; HTTP exposes photos and credentials"
+            android:title="Allow insecure HTTP server" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Display Options">
         <SwitchPreferenceCompat
-            android:defaultValue="true"
-            android:key="useWebView"
-            android:title="Use WebView?" />
-        <SwitchPreferenceCompat
             android:defaultValue="false"
-            android:key="blurredBackground"
-            android:title="Blurred Background?" />
+            android:key="useWebView"
+            android:summary="Not recommended on old dedicated frames such as WF1561"
+            android:title="Use WebView?" />
+        <ListPreference
+            android:defaultValue="THUMBHASH"
+            android:entries="@array/frame_background_entries"
+            android:entryValues="@array/frame_background_values"
+            android:key="frameBackground"
+            android:summary="%s"
+            android:title="Unused-space background" />
+        <ListPreference
+            android:defaultValue="FIT"
+            android:entries="@array/frame_scale_entries"
+            android:entryValues="@array/frame_scale_values"
+            android:key="frameScale"
+            android:summary="%s"
+            android:title="Photo scaling" />
+        <SeekBarPreference
+            android:defaultValue="8"
+            android:key="splitGapDp"
+            android:max="32"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Split-view gap (dp)" />
+        <SeekBarPreference
+            android:defaultValue="0"
+            android:key="overlayFadeSeconds"
+            android:max="120"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Fade photo metadata after seconds (0 = never)" />
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="burnInEnabled"
+            android:title="Move overlays to reduce burn-in" />
+        <SeekBarPreference
+            android:defaultValue="40"
+            android:key="clockSizeSp"
+            android:max="64"
+            android:min="24"
+            app:showSeekBarValue="true"
+            android:title="Clock size (sp)" />
+        <SeekBarPreference
+            android:defaultValue="20"
+            android:key="metadataSizeSp"
+            android:max="36"
+            android:min="12"
+            app:showSeekBarValue="true"
+            android:title="Photo date/location size (sp)" />
+        <SeekBarPreference
+            android:defaultValue="96"
+            android:key="overlayScrimAlpha"
+            android:max="220"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Overlay background strength" />
+        <SeekBarPreference
+            android:defaultValue="24"
+            android:key="safeMarginDp"
+            android:max="48"
+            android:min="8"
+            app:showSeekBarValue="true"
+            android:title="Overlay safe margin (dp)" />
+        <SeekBarPreference
+            android:defaultValue="16"
+            android:key="edgeFeatherDp"
+            android:max="64"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Photo edge blend (dp)" />
+        <SeekBarPreference
+            android:defaultValue="30"
+            android:key="zoomFrameRate"
+            android:max="60"
+            android:min="10"
+            app:showSeekBarValue="true"
+            android:title="Ken Burns zoom frame rate" />
         <SwitchPreferenceCompat
             android:defaultValue="false"
             android:key="showCurrentDate"
@@ -29,6 +106,19 @@
             android:defaultValue="false"
             android:key="settingsLock"
             android:title="Lock access to these settings?" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Authenticated Remote Control">
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="rpcEnabled"
+            android:title="Enable LAN RPC server" />
+        <EditTextPreference
+            android:dependency="rpcEnabled"
+            android:defaultValue=""
+            android:key="rpcToken"
+            android:summary="Required as an Authorization: Bearer token"
+            android:title="RPC access token" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Active Times">

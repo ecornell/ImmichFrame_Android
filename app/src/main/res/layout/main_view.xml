@@ -10,11 +10,11 @@
         android:layout_height="match_parent"
         android:background="@color/black">
 
-        <WebView
-            android:id="@+id/webView"
+        <FrameLayout
+            android:id="@+id/webViewContainer"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:visibility="visible" />
+            android:visibility="gone" />
 
         <ImageView
             android:id="@+id/imageView1"
@@ -30,27 +30,60 @@
             android:visibility="gone"
             tools:ignore="ContentDescription" />
 
-        <TextView
-            android:id="@+id/txtPhotoInfo"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:id="@+id/photoInfoContainer"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom|end"
-            android:background="@android:color/transparent"
-            android:gravity="end"
-            android:padding="8dp"
-            android:shadowColor="#99000000"
-            android:shadowDx="2"
-            android:shadowDy="2"
-            android:shadowRadius="4"
-            android:text=""
-            android:textSize="16sp"
-            android:visibility="gone" />
+            android:layout_gravity="bottom"
+            android:layout_margin="24dp"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <TextView
+                    android:id="@+id/txtPhotoInfoLeft"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="bottom|end"
+                    android:gravity="end"
+                    android:padding="8dp"
+                    android:shadowColor="#CC000000"
+                    android:shadowDx="2"
+                    android:shadowDy="2"
+                    android:shadowRadius="4"
+                    android:textSize="16sp" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <TextView
+                    android:id="@+id/txtPhotoInfoRight"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="bottom|end"
+                    android:gravity="end"
+                    android:padding="8dp"
+                    android:shadowColor="#CC000000"
+                    android:shadowDx="2"
+                    android:shadowDy="2"
+                    android:shadowRadius="4"
+                    android:textSize="16sp" />
+            </FrameLayout>
+        </LinearLayout>
 
         <TextView
             android:id="@+id/txtDateTime"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|start"
+            android:layout_margin="24dp"
             android:background="@android:color/transparent"
             android:gravity="center"
             android:padding="8dp"
@@ -62,30 +95,30 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
-        <Button
+        <View
             android:id="@+id/btnPrevious"
             android:layout_width="125dp"
             android:layout_height="125dp"
             android:layout_gravity="center_vertical|start"
             android:layout_marginStart="8dp"
-            android:background="@android:color/transparent"
+            android:background="@null"
             android:visibility="gone" />
 
-        <Button
+        <View
             android:id="@+id/btnPause"
             android:layout_width="125dp"
             android:layout_height="125dp"
             android:layout_gravity="center"
-            android:background="@android:color/transparent"
+            android:background="@null"
             android:visibility="gone" />
 
-        <Button
+        <View
             android:id="@+id/btnNext"
             android:layout_width="125dp"
             android:layout_height="125dp"
             android:layout_gravity="center_vertical|end"
             android:layout_marginEnd="8dp"
-            android:background="@android:color/transparent"
+            android:background="@null"
             android:visibility="gone" />
 
         <View
