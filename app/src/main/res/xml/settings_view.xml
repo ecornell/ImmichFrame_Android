@@ -39,7 +39,7 @@
             android:summary="%s"
             android:title="Photo scaling" />
         <SeekBarPreference
-            android:defaultValue="8"
+            android:defaultValue="6"
             android:key="splitGapDp"
             android:max="32"
             android:min="0"
@@ -64,7 +64,7 @@
             app:showSeekBarValue="true"
             android:title="Clock size (sp)" />
         <SeekBarPreference
-            android:defaultValue="20"
+            android:defaultValue="24"
             android:key="metadataSizeSp"
             android:max="36"
             android:min="12"
@@ -85,12 +85,26 @@
             app:showSeekBarValue="true"
             android:title="Overlay safe margin (dp)" />
         <SeekBarPreference
-            android:defaultValue="16"
+            android:defaultValue="32"
             android:key="edgeFeatherDp"
             android:max="64"
             android:min="0"
             app:showSeekBarValue="true"
             android:title="Photo edge blend (dp)" />
+        <SeekBarPreference
+            android:defaultValue="16"
+            android:key="backgroundBlurRadius"
+            android:max="24"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Background blur strength" />
+        <SeekBarPreference
+            android:defaultValue="84"
+            android:key="backgroundDarkness"
+            android:max="200"
+            android:min="0"
+            app:showSeekBarValue="true"
+            android:title="Background darkness" />
         <SeekBarPreference
             android:defaultValue="30"
             android:key="zoomFrameRate"

@@ -39,13 +39,20 @@ safe overlay margins, and optional metadata fading/burn-in movement. WebView is 
 when WebView mode is selected. On the WF1561 this reduced observed native-mode PSS from about 150 MB
 to roughly 74–96 MB during initial live validation.
 
-The native Ken Burns path defaults to 30 FPS and keeps its 1.0→1.2 zoom while reducing work on old
-HWUI drivers. Full images are Base64-decoded once, sampled for their actual fit/crop destination,
-and old frame drawables are released after each crossfade. The offline cache stores compressed
-binary image data and is written at most every 15 minutes. `Ken Burns zoom frame rate` can be tuned
-from 10–60 FPS in native settings. On the WF1561, the 30 FPS path reduced measured application CPU
-from roughly 100–120% to 45–48% of one core and janky frames from 69% to about 10–11%, while keeping
-the zoom enabled.
+The native Ken Burns path defaults to 30 FPS and retains zoom while reducing work on old HWUI
+drivers. It adds constrained directional panning and selects a gentler 1.06–1.10 endpoint for
+letterboxed/group-like and split images, with up to 1.16 for better-filled images. Full images are
+Base64-decoded once, sampled for their actual fit/crop destination, and old frame drawables are
+released after each crossfade. High-confidence embedded black borders are removed before layout.
+Side fill comes from a 320×180 ARGB blurred, darkened copy of the actual photo with adaptive
+five-stop feathered seams; split dividers use a darkened blend of both photos and default to 6dp.
+Native settings expose edge width, blur radius, and background darkness; WF1561 defaults are 32dp,
+radius 16 with three passes, and alpha 84 respectively. The offline
+cache stores compressed binary image data and is written at
+most every 15 minutes; a compact indicator briefly reports failed image refreshes. `Ken Burns zoom
+frame rate` can be tuned from 10–60 FPS in native settings. On the WF1561, the 30 FPS path reduced
+measured application CPU from roughly 100–120% to about 43% of one core and janky frames from 69%
+to about 11%, while keeping animated zoom and pan enabled.
 
 WF1561 operational constraints:
 

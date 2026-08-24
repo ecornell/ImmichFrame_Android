@@ -53,6 +53,7 @@ class ScreenSaverService : DreamService() {
     private lateinit var txtPhotoInfoLeft: TextView
     private lateinit var txtPhotoInfoRight: TextView
     private lateinit var txtDateTime: TextView
+    private lateinit var txtOfflineIndicator: TextView
     private lateinit var serverSettings: Helpers.ServerSettings
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
@@ -60,15 +61,17 @@ class ScreenSaverService : DreamService() {
     private var useWebView = true
     private var frameBackground = FrameBackground.THUMBHASH
     private var frameScale = FrameScale.FIT
-    private var splitGapPx = 10
+    private var splitGapPx = 6
     private var overlayFadeSeconds = 0
     private var burnInEnabled = true
     private val burnInController = OverlayBurnInController()
     private var clockSizeSp = 40
-    private var metadataSizeSp = 20
+    private var metadataSizeSp = 24
     private var overlayScrimAlpha = 96
     private var safeMarginDp = 24
-    private var edgeFeatherPx = 16
+    private var edgeFeatherPx = 32
+    private var backgroundBlurRadius = 16
+    private var backgroundDarkness = 84
     private var zoomFrameRate = 30
     private var showCurrentDate = true
     private var currentWeather = ""
@@ -114,6 +117,7 @@ class ScreenSaverService : DreamService() {
         txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
         txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
         txtDateTime = findViewById(R.id.txtDateTime)
+        txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
 
         acquireWakeLock()
         loadSettings()
@@ -227,7 +231,7 @@ class ScreenSaverService : DreamService() {
                 }.getOrDefault(Color.BLACK)
                 rendered = FrameRenderer.render(
                     width, height, first, second, frameScale, frameBackground, splitGapPx, gapColor,
-                    edgeFeatherPx,
+                    edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
                 )
                 withContext(Dispatchers.Main) {
                     if (generation == imageGeneration) {
@@ -336,11 +340,13 @@ class ScreenSaverService : DreamService() {
                 if (response.isSuccessful) {
                     val imageResponse = response.body()
                     if (imageResponse != null) {
+                        setOfflineIndicator(false)
                         previousImage = currentImage
                         currentImage = imageResponse
                         showImage(imageResponse)
                     }
                 } else {
+                    setOfflineIndicator(true)
                     Toast.makeText(
                         applicationContext,
                         "Failed to load image (HTTP ${response.code()})",
@@ -351,6 +357,7 @@ class ScreenSaverService : DreamService() {
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
                 imageCall = null
+                if (!call.isCanceled) setOfflineIndicator(true)
             }
         })
     }
@@ -360,6 +367,23 @@ class ScreenSaverService : DreamService() {
             isImageTimerRunning = true
             handler.postDelayed(imageRunnable, (serverSettings.interval * 1000).toLong())
         }
+    }
+
+    private fun setOfflineIndicator(offline: Boolean) {
+        if (!::txtOfflineIndicator.isInitialized) return
+        txtOfflineIndicator.animate().cancel()
+        if (!offline) {
+            txtOfflineIndicator.visibility = View.GONE
+            return
+        }
+        txtOfflineIndicator.alpha = 1f
+        txtOfflineIndicator.visibility = View.VISIBLE
+        txtOfflineIndicator.animate()
+            .alpha(0f)
+            .setStartDelay(8_000L)
+            .setDuration(500L)
+            .withEndAction { txtOfflineIndicator.visibility = View.GONE }
+            .start()
     }
 
     private fun stopImageTimer() {
@@ -448,14 +472,16 @@ class ScreenSaverService : DreamService() {
         frameScale = runCatching {
             FrameScale.valueOf(prefs.getString("frameScale", "FIT")!!)
         }.getOrDefault(FrameScale.FIT)
-        splitGapPx = (prefs.getInt("splitGapDp", 8) * resources.displayMetrics.density).toInt()
+        splitGapPx = (prefs.getInt("splitGapDp", 6) * resources.displayMetrics.density).toInt()
         overlayFadeSeconds = prefs.getInt("overlayFadeSeconds", 0)
         burnInEnabled = prefs.getBoolean("burnInEnabled", true)
         clockSizeSp = prefs.getInt("clockSizeSp", 40)
-        metadataSizeSp = prefs.getInt("metadataSizeSp", 20)
+        metadataSizeSp = prefs.getInt("metadataSizeSp", 24)
         overlayScrimAlpha = prefs.getInt("overlayScrimAlpha", 96)
         safeMarginDp = prefs.getInt("safeMarginDp", 24)
-        edgeFeatherPx = (prefs.getInt("edgeFeatherDp", 16) * resources.displayMetrics.density).toInt()
+        edgeFeatherPx = (prefs.getInt("edgeFeatherDp", 32) * resources.displayMetrics.density).toInt()
+        backgroundBlurRadius = prefs.getInt("backgroundBlurRadius", 16).coerceIn(0, 24)
+        backgroundDarkness = prefs.getInt("backgroundDarkness", 84).coerceIn(0, 200)
         zoomFrameRate = prefs.getInt("zoomFrameRate", 30).coerceIn(10, 60)
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         var savedUrl = prefs.getString("webview_url", "") ?: ""
@@ -699,6 +725,7 @@ class ScreenSaverService : DreamService() {
             view.setPadding(horizontal, vertical, horizontal, vertical)
         }
         style(txtDateTime)
+        style(txtOfflineIndicator)
         val metadataAlpha = (overlayScrimAlpha * 0.8f).toInt()
         style(txtPhotoInfoLeft, metadataAlpha)
         style(txtPhotoInfoRight, metadataAlpha)

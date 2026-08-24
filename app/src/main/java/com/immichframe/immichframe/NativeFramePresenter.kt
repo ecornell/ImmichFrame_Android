@@ -15,6 +15,8 @@ internal class KenBurnsZoomController(
 ) {
     private var activeView: ImageView? = null
     private var runnable: Runnable? = null
+    private var directionIndex = 0
+    private val directions = listOf(-1f to -0.5f, 0.6f to -1f, 1f to 0.5f, -0.6f to 1f)
 
     fun start(
         view: ImageView,
@@ -26,6 +28,9 @@ internal class KenBurnsZoomController(
         val duration = durationMillis.coerceAtLeast(1L)
         val frameDelay = (1_000L / framesPerSecond.coerceIn(10, 60)).coerceAtLeast(16L)
         val startedAt = SystemClock.uptimeMillis()
+        val direction = directions[directionIndex++ % directions.size]
+        val maxTranslationX = view.width * (endScale - 1f) * 0.22f
+        val maxTranslationY = view.height * (endScale - 1f) * 0.22f
         activeView = view
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         view.buildLayer()
@@ -33,9 +38,12 @@ internal class KenBurnsZoomController(
             override fun run() {
                 if (activeView !== view || !view.isAttachedToWindow) return
                 val elapsed = SystemClock.uptimeMillis() - startedAt
-                val scale = scaleAt(elapsed, duration, endScale)
+                val fraction = fractionAt(elapsed, duration)
+                val scale = 1f + ((endScale - 1f) * fraction)
                 view.scaleX = scale
                 view.scaleY = scale
+                view.translationX = maxTranslationX * direction.first * fraction
+                view.translationY = maxTranslationY * direction.second * fraction
                 if (elapsed < duration) handler.postDelayed(this, frameDelay)
             }
         }
@@ -52,10 +60,12 @@ internal class KenBurnsZoomController(
 
     companion object {
         internal fun scaleAt(elapsedMillis: Long, durationMillis: Long, endScale: Float): Float {
-            val fraction = (elapsedMillis.toFloat() / durationMillis.coerceAtLeast(1L))
-                .coerceIn(0f, 1f)
+            val fraction = fractionAt(elapsedMillis, durationMillis)
             return 1f + ((endScale - 1f) * fraction)
         }
+
+        private fun fractionAt(elapsedMillis: Long, durationMillis: Long): Float =
+            (elapsedMillis.toFloat() / durationMillis.coerceAtLeast(1L)).coerceIn(0f, 1f)
     }
 }
 
@@ -92,6 +102,8 @@ internal class NativeFramePresenter(
         newView.alpha = 0f
         newView.scaleX = 1f
         newView.scaleY = 1f
+        newView.translationX = 0f
+        newView.translationY = 0f
         newView.setImageBitmap(frame.bitmap)
         newView.visibility = View.VISIBLE
 
@@ -106,7 +118,12 @@ internal class NativeFramePresenter(
                     // cannot immediately undo its explicit hardware-layer promotion.
                     newView.post {
                         if (token == generation) {
-                            zoom.start(newView, zoomDurationMillis, zoomFramesPerSecond)
+                            zoom.start(
+                                newView,
+                                zoomDurationMillis,
+                                zoomFramesPerSecond,
+                                frame.zoomEndScale,
+                            )
                         }
                     }
                 }
@@ -123,6 +140,8 @@ internal class NativeFramePresenter(
                     oldView.visibility = View.GONE
                     oldView.scaleX = 1f
                     oldView.scaleY = 1f
+                    oldView.translationX = 0f
+                    oldView.translationY = 0f
                     oldView.post {
                         if (token == generation) {
                             oldView.setLayerType(View.LAYER_TYPE_NONE, null)
@@ -146,6 +165,8 @@ internal class NativeFramePresenter(
             view.setLayerType(View.LAYER_TYPE_NONE, null)
             view.scaleX = 1f
             view.scaleY = 1f
+            view.translationX = 0f
+            view.translationY = 0f
         }
     }
 }

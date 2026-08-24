@@ -37,6 +37,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
             findPreference<Preference>("overlayScrimAlpha"),
             findPreference<Preference>("safeMarginDp"),
             findPreference<Preference>("edgeFeatherDp"),
+            findPreference<Preference>("backgroundBlurRadius"),
+            findPreference<Preference>("backgroundDarkness"),
             findPreference<Preference>("zoomFrameRate"),
         )
         val chkActiveTimes = findPreference<SwitchPreferenceCompat>("activeTimes")

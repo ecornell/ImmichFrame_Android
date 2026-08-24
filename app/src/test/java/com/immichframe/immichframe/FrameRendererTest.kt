@@ -41,4 +41,17 @@ class FrameRendererTest {
         assertEquals(8000, FrameRenderer.requiredDecodeDimension(8000, 1000, slot, FrameScale.CROP))
         assertEquals(1920, FrameRenderer.requiredDecodeDimension(8000, 1000, slot, FrameScale.FIT))
     }
+
+    @Test fun letterboxedAndSplitPhotosUseGentlerZoom() {
+        val screen = IntBounds(0, 0, 1920, 1080)
+        assertEquals(1.06f, FrameRenderer.recommendedZoomScale(1600, 1200, screen, FrameScale.FIT, false))
+        assertEquals(1.16f, FrameRenderer.recommendedZoomScale(1920, 1080, screen, FrameScale.FIT, false))
+        assertEquals(1.10f, FrameRenderer.recommendedZoomScale(900, 1200, screen, FrameScale.FIT, true))
+    }
+
+    @Test fun blackBarDetectionUsesAConservativeColorThreshold() {
+        assertTrue(FrameRenderer.isNearlyBlack(12, 18, 20))
+        assertTrue(!FrameRenderer.isNearlyBlack(21, 18, 18))
+        assertTrue(!FrameRenderer.isNearlyBlack(8, 8, 30))
+    }
 }
