@@ -94,6 +94,24 @@ dismisses a resolver that Android 8.1 may have opened while replacing the HOME p
   -ApkPath C:\Users\elija\AppData\Local\Temp\ImmichFrame-debug.apk
 ```
 
+Install the optional read-only host monitor after deployment. It runs for less than two minutes
+every five minutes, records only health/resource summaries, keeps 14 days of daily CSV history, and
+does not restart or modify the frame:
+
+```powershell
+.\scripts\install-wf1561-monitor.ps1 -FrameIp FRAME-IP
+Get-Content "$env:LOCALAPPDATA\ImmichFrame\monitor\latest.json"
+```
+
+The monitor checks ADB reachability, ImmichFrame and OEM panel processes, preferred HOME, PSS, CPU,
+temperature, whether ADUPS FOTA has returned, and flags PSS above 120 MB or temperature above 80°C.
+A current problem creates
+`%LOCALAPPDATA%\ImmichFrame\monitor\alert.txt`; a healthy sample removes it. Because this ROM's IP
+changes after reboot, the monitor caches the last working endpoint and automatically scans the
+original `/24` for TCP 5555 only when known endpoints fail. Candidates must report the expected
+WF1561 hardware serial, so another Android ADB device is not mistaken for the frame. Remove it with
+`Unregister-ScheduledTask -TaskName 'ImmichFrame WF1561 Monitor' -Confirm:$false`.
+
 Android may clear its preferred-HOME record whenever a HOME-capable APK is replaced. Applications
 cannot silently grant themselves HOME status, so every deployment must run
 `cmd package set-home-activity` after `install -r`; the wrapper automates this and verifies the
