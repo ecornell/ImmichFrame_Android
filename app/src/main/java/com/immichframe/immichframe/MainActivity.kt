@@ -284,6 +284,7 @@ class MainActivity : AppCompatActivity() {
     private fun showImage(
         imageResponse: Helpers.ImageResponse,
         persist: Boolean = true,
+        allowPortraitPair: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
         val generation = ++imageGeneration
@@ -302,7 +303,7 @@ class MainActivity : AppCompatActivity() {
                 var waitingForPair = false
                 synchronized(portraitCacheLock) {
                     if (generation != imageGeneration) return@launch
-                    if (isPortrait && serverSettings.layout == "splitview") {
+                    if (allowPortraitPair && isPortrait && serverSettings.layout == "splitview") {
                         val cached = portraitCache
                         if (cached != null && portraitCacheGeneration == generation - 1L) {
                             first = cached
@@ -782,7 +783,14 @@ class MainActivity : AppCompatActivity() {
         if (cachedImage != null) {
             cachedImage.let {
                 currentImage = it
-                showImage(it, persist = false, afterPresented = ::getNextImage)
+                // The offline cache contains one last-known image. Never wait for a second
+                // portrait from an unavailable server; render the cached portrait full-frame.
+                showImage(
+                    it,
+                    persist = false,
+                    allowPortraitPair = false,
+                    afterPresented = ::getNextImage,
+                )
             }
         } else {
             getNextImage()
