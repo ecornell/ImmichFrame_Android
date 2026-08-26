@@ -126,14 +126,31 @@ $results = @()
 
 function Invoke-Adb {
     param([string]$Serial, [string[]]$Arguments)
-    $output = (& $AdbPath -s $Serial @Arguments 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw "adb -s $Serial $($Arguments -join ' ') failed: $output" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # adb writes successful transfer progress to stderr. Capture it without allowing
+        # PowerShell's NativeCommandError wrapper to abort an otherwise successful command.
+        $ErrorActionPreference = 'Continue'
+        $rawOutput = & $AdbPath -s $Serial @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    $output = ($rawOutput | Out-String).Trim()
+    if ($exitCode -ne 0) { throw "adb -s $Serial $($Arguments -join ' ') failed: $output" }
     return $output
 }
 
 function Invoke-AdbOptional {
     param([string[]]$Arguments)
-    return (& $AdbPath @Arguments 2>&1 | Out-String).Trim()
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawOutput = & $AdbPath @Arguments 2>&1
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return ($rawOutput | Out-String).Trim()
 }
 
 function Test-TcpPort {
