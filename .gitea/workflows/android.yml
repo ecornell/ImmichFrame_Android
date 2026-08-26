@@ -29,9 +29,13 @@ jobs:
       - name: Validate Gradle wrapper
         run: |
           test -f gradle/wrapper/gradle-wrapper.jar
-          bash gradlew --version
+          bash gradlew --no-daemon --version
       - name: Validate
-        run: bash gradlew testDebugUnitTest lintDebug assembleDebug
+        run: >-
+          bash gradlew --no-daemon --max-workers=1
+          -Dorg.gradle.jvmargs="-Xmx1024m -Dfile.encoding=UTF-8"
+          -Pkotlin.compiler.execution.strategy=in-process
+          testDebugUnitTest lintDebug assembleDebug
       - uses: actions/upload-artifact@v4
         if: always()
         with:
