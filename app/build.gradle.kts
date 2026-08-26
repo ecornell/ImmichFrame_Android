@@ -31,8 +31,8 @@ android {
         applicationId = "com.immichframe.immichframe"
         minSdk = 23
         targetSdk = 36
-        versionCode = 50
-        versionName = "1.0.50.0"
+        versionCode = 51
+        versionName = "1.0.51.0"
         manifestPlaceholders["appLabel"] = "ImmichFrame"
         manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
     }
@@ -84,6 +84,8 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofitgson)
     implementation(libs.nanohttpd)
+    implementation(libs.paho.mqtt)
     implementation(libs.androidx.preference)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

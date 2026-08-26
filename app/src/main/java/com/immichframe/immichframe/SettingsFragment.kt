@@ -55,6 +55,12 @@ class SettingsFragment : PreferenceFragmentCompat() {
         rpcTokenPref?.setOnBindEditTextListener { editText ->
             editText.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
+        val mqttPasswordPref = findPreference<EditTextPreference>("mqttPassword")
+        mqttPasswordPref?.setOnBindEditTextListener { editText ->
+            editText.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val prefs = PreferenceManager.getDefaultSharedPreferences(requireContext())
+        findPreference<Preference>("mqttDeviceIdDisplay")?.summary = RemoteIdentity.getOrCreate(prefs)
         findPreference<SwitchPreferenceCompat>("rpcEnabled")
             ?.setOnPreferenceChangeListener { _, newValue ->
                 if (newValue as Boolean && rpcTokenPref?.text.isNullOrBlank()) {
@@ -149,6 +155,10 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 .getString("webview_url", "")?.trim()
             val allowCleartext = PreferenceManager.getDefaultSharedPreferences(requireContext())
                 .getBoolean("allowCleartext", false)
+            val mqttEnabled = PreferenceManager.getDefaultSharedPreferences(requireContext())
+                .getBoolean("mqttEnabled", false)
+            val mqttBrokerUri = PreferenceManager.getDefaultSharedPreferences(requireContext())
+                .getString("mqttBrokerUri", "")?.trim().orEmpty()
             val urlPattern = Regex("^https?://.+")
             return@setOnPreferenceClickListener if (url.isNullOrEmpty() || !url.matches(urlPattern)) {
                 Toast.makeText(requireContext(), "Please enter a valid server URL.", Toast.LENGTH_LONG).show()
@@ -157,6 +167,13 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 Toast.makeText(
                     requireContext(),
                     "Enable insecure HTTP explicitly, or configure an HTTPS server.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                false
+            } else if (mqttEnabled && !mqttBrokerUri.matches(Regex("^(tcp|ssl|ws|wss)://[^\\s]+$", RegexOption.IGNORE_CASE))) {
+                Toast.makeText(
+                    requireContext(),
+                    "Enter a valid MQTT broker URI such as tcp://host:1883 or ssl://host:8883.",
                     Toast.LENGTH_LONG,
                 ).show()
                 false

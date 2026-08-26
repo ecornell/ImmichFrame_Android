@@ -33,6 +33,63 @@ Euphro WF1561 deployment is Android 8.1/API 27 with 1 GB RAM, so keep image dime
 perform a 24–72 hour memory/network-loss soak test before deployment. RPC is disabled by default;
 when enabled it requires `POST` and `Authorization: Bearer <RPC token>`.
 
+### REST and Home Assistant control
+
+Enable **LAN RPC server** and copy the generated token from the app settings. The existing
+`/on`, `/off`, `/next`, `/previous`, `/pause`, `/settings`, and `/brightness?value=0.5` POST
+routes remain available. The versioned API returns JSON and uses the same bearer token:
+
+```bash
+curl -H "Authorization: Bearer TOKEN" http://FRAME-IP:53287/api/v1/state
+curl -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"active":true}' http://FRAME-IP:53287/api/v1/display
+curl -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"paused":false}' http://FRAME-IP:53287/api/v1/playback
+curl -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"brightness":0.5}' http://FRAME-IP:53287/api/v1/brightness
+curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{}' http://FRAME-IP:53287/api/v1/actions/next
+```
+
+Home Assistant can poll `/api/v1/state` with its REST integration and call action endpoints with
+`rest_command`. Store the bearer token in `secrets.yaml` and pass it as an `Authorization` header.
+For example:
+
+```yaml
+rest:
+  - resource: http://FRAME-IP:53287/api/v1/state
+    scan_interval: 30
+    headers:
+      Authorization: !secret immichframe_authorization
+    sensor:
+      - name: ImmichFrame playback
+        value_template: "{{ value_json.playback }}"
+        json_attributes: [displayActive, serverConnected, offlineFallback, presentationMode]
+
+rest_command:
+  immichframe_next:
+    url: http://FRAME-IP:53287/api/v1/actions/next
+    method: POST
+    headers:
+      Authorization: !secret immichframe_authorization
+      Content-Type: application/json
+    payload: '{}'
+```
+
+Set the secret value to `Bearer TOKEN`, including the `Bearer` prefix.
+
+For automatic Home Assistant device/entity creation, enable **MQTT**, enter a broker URI such as
+`tcp://HOME-ASSISTANT-IP:1883` (or `ssl://HOST:8883` with a trusted certificate), and provide the
+broker credentials. The frame publishes retained MQTT Discovery definitions for display and
+playback switches, brightness, next/previous/refresh buttons, connectivity/offline sensors,
+presentation mode, and app version. It also publishes a retained availability state with an MQTT
+last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
+message. The generated device ID is stable across upgrades as long as application data is retained.
+
+Both interfaces are intended only for a trusted LAN. Plain `http://` and `tcp://` expose commands
+and credentials to the local network; do not port-forward either interface to the internet. MQTT
+command messages are never retained, preventing stale commands from replaying after reconnect.
+
 Native rendering uses viewport-sized output frames, equal fixed slots for paired portraits,
 per-photo metadata, sampled decoding, soft/average/black background choices, fit/crop scaling,
 safe overlay margins, and optional metadata fading/burn-in movement. WebView is created lazily only

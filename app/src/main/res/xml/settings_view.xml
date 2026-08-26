@@ -135,6 +135,35 @@
             android:title="RPC access token" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="MQTT / Home Assistant">
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="mqttEnabled"
+            android:summary="Publish controls and status using Home Assistant MQTT Discovery"
+            android:title="Enable MQTT" />
+        <EditTextPreference
+            android:dependency="mqttEnabled"
+            android:defaultValue=""
+            android:inputType="textUri"
+            android:key="mqttBrokerUri"
+            android:summary="For example tcp://192.168.1.10:1883 or ssl://broker:8883"
+            android:title="MQTT broker URI" />
+        <EditTextPreference
+            android:dependency="mqttEnabled"
+            android:defaultValue=""
+            android:key="mqttUsername"
+            android:title="MQTT username" />
+        <EditTextPreference
+            android:dependency="mqttEnabled"
+            android:defaultValue=""
+            android:key="mqttPassword"
+            android:title="MQTT password" />
+        <Preference
+            android:key="mqttDeviceIdDisplay"
+            android:selectable="false"
+            android:title="MQTT device ID" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Active Times">
         <SwitchPreferenceCompat
             android:defaultValue="false"

@@ -74,6 +74,38 @@ class MainActivity : AppCompatActivity() {
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
     private var rpcServer: RpcHttpServer? = null
+    private var mqttClient: MqttControlClient? = null
+    private var remoteConfigurationKey: String? = null
+    private val remoteState = RemoteStateStore()
+    private val remoteCommands: RemoteCommands by lazy {
+        object : RemoteCommands {
+            override fun setDisplayActive(active: Boolean) {
+                remoteState.update { it.copy(displayActive = active) }
+                runOnUiThread { setFrameActive(active) }
+            }
+
+            override fun setPaused(paused: Boolean) {
+                val current = remoteState.snapshot().paused
+                if (current == paused) return
+                remoteState.update { it.copy(paused = paused) }
+                runOnUiThread { pauseAction() }
+            }
+
+            override fun togglePaused() {
+                setPaused(!remoteState.snapshot().paused)
+            }
+
+            override fun setBrightness(brightness: Float?) {
+                remoteState.update { it.copy(brightness = brightness) }
+                runOnUiThread { screenBrightnessAction(brightness ?: -1f) }
+            }
+
+            override fun next() = runOnUiThread { nextAction() }
+            override fun previous() = runOnUiThread { previousAction() }
+            override fun refresh() = runOnUiThread { nextAction() }
+            override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
+        }
+    }
     private var imageCall: Call<Helpers.ImageResponse>? = null
     private var imageJob: Job? = null
     @Volatile private var imageGeneration = 0L
@@ -220,7 +252,15 @@ class MainActivity : AppCompatActivity() {
             nextAction()
         }
 
-        configureRpcServer()
+        remoteState.update {
+            it.copy(
+                presentationMode = if (useWebView) "webview" else "native",
+                version = appVersionName(),
+                paused = !isImageTimerRunning,
+                displayActive = isFrameInactive != true,
+            )
+        }
+        configureRemoteInterfaces()
 
         registerReceiver(
             screenStateReceiver,
@@ -423,6 +463,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setOfflineIndicator(offline: Boolean) {
+        remoteState.update {
+            it.copy(
+                serverConnected = !offline,
+                offlineFallback = offline && currentImage != null,
+                lastImageSuccessMillis = if (offline) it.lastImageSuccessMillis else System.currentTimeMillis(),
+            )
+        }
         if (!::txtOfflineIndicator.isInitialized) return
         txtOfflineIndicator.animate().cancel()
         if (!offline) {
@@ -469,12 +516,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getWeather() {
+        if (isFrameInactive == true || !::apiService.isInitialized) return
         apiService.getWeather().enqueue(object : Callback<Helpers.Weather> {
             override fun onResponse(
                 call: Call<Helpers.Weather>,
                 response: Response<Helpers.Weather>
             ) {
-                if (response.isSuccessful) {
+                if (isFrameInactive != true && response.isSuccessful) {
                     val weatherResponse = response.body()
                     if (weatherResponse != null) {
                         currentWeather =
@@ -499,7 +547,7 @@ class MainActivity : AppCompatActivity() {
         var retryCount = 0
 
         fun attemptFetch() {
-            if (useWebView) {
+            if (useWebView || isFrameInactive == true) {
                 return
             }
             apiService.getServerSettings().enqueue(object : Callback<Helpers.ServerSettings> {
@@ -524,7 +572,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 private fun handleFailure(t: Throwable) {
-                    if (useWebView) {
+                    if (useWebView || isFrameInactive == true) {
                         return
                     }
                     if (retryCount < maxRetries) {
@@ -568,7 +616,13 @@ class MainActivity : AppCompatActivity() {
         val authSecret = prefs.getString("authSecret", "") ?: ""
         val settingsLock = prefs.getBoolean("settingsLock", false)
         val activeTimes = prefs.getBoolean("activeTimes", false)
-        configureRpcServer()
+        remoteState.update {
+            it.copy(
+                presentationMode = if (useWebView) "webview" else "native",
+                version = appVersionName(),
+            )
+        }
+        configureRemoteInterfaces()
 
         webViewContainer.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
@@ -651,10 +705,24 @@ class MainActivity : AppCompatActivity() {
             destroyWebView()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
+
+            // Render the last successful image immediately at cold start. The image cache needs
+            // its matching server presentation settings, so retain both independently of the
+            // live request and refresh them in the background when the server returns.
+            if (isFrameInactive != true && currentImage == null) {
+                CachedServerSettingsStore.read(applicationContext)?.let { cachedSettings ->
+                    serverSettings = cachedSettings
+                    setOfflineIndicator(true)
+                    onSettingsLoaded()
+                }
+            }
             getServerSettings(
                 onSuccess = { settings ->
+                    CachedServerSettingsStore.write(applicationContext, settings)
                     serverSettings = settings
-                    onSettingsLoaded()
+                    if (isFrameInactive != true) {
+                        onSettingsLoaded()
+                    }
                 },
                 onFailure = { error ->
                     Toast.makeText(
@@ -668,6 +736,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onSettingsLoaded() {
+        if (isFrameInactive == true) return
         if (serverSettings.imageFill) {
             imageView1.scaleType = ImageView.ScaleType.CENTER_CROP
             imageView2.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -754,6 +823,7 @@ class MainActivity : AppCompatActivity() {
             getNextImage()
             startImageTimer()
         }
+        remoteState.update { it.copy(paused = false) }
     }
 
     private fun pauseAction() {
@@ -771,6 +841,7 @@ class MainActivity : AppCompatActivity() {
                 startImageTimer()
             }
         }
+        remoteState.update { it.copy(paused = !isImageTimerRunning) }
     }
 
     private fun settingsAction(authorizedOverride: Boolean = false) {
@@ -790,6 +861,7 @@ class MainActivity : AppCompatActivity() {
             lp.screenBrightness = brightness
         }
         window.attributes = lp
+        remoteState.update { it.copy(brightness = brightness.takeUnless { value -> value < 0f }) }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -874,6 +946,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setFrameActive(active: Boolean) {
+        remoteState.update { it.copy(displayActive = active) }
         if (active) {
             isFrameInactive = false
             cancelWakeAlarm()
@@ -1056,7 +1129,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemUI()
-        configureRpcServer()
+        configureRemoteInterfaces()
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
@@ -1084,6 +1157,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         rpcServer?.stop()
         rpcServer = null
+        mqttClient?.stop()
+        mqttClient = null
         imageCall?.cancel()
         imageJob?.cancel()
         unregisterReceiver(screenStateReceiver)
@@ -1130,36 +1205,56 @@ class MainActivity : AppCompatActivity() {
         hideSystemUI()
     }
 
-    private fun configureRpcServer() {
+    private fun configureRemoteInterfaces() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        val enabled = prefs.getBoolean("rpcEnabled", false)
+        val rpcEnabled = prefs.getBoolean("rpcEnabled", false)
         val token = prefs.getString("rpcToken", "").orEmpty()
-        if (!enabled || token.isBlank()) {
-            rpcServer?.stop()
-            rpcServer = null
-            return
+        val mqttEnabled = prefs.getBoolean("mqttEnabled", false)
+        val brokerUri = prefs.getString("mqttBrokerUri", "").orEmpty().trim()
+        val mqttUsername = prefs.getString("mqttUsername", "").orEmpty()
+        val mqttPassword = prefs.getString("mqttPassword", "").orEmpty()
+        val deviceId = RemoteIdentity.getOrCreate(prefs)
+        val configurationKey = listOf(
+            rpcEnabled, token, mqttEnabled, brokerUri, mqttUsername, mqttPassword, deviceId,
+        ).joinToString("\u0000")
+        if (configurationKey == remoteConfigurationKey) return
+        remoteConfigurationKey = configurationKey
+
+        rpcServer?.stop()
+        rpcServer = null
+        mqttClient?.stop()
+        mqttClient = null
+
+        if (rpcEnabled && token.isNotBlank()) {
+            val server = RpcHttpServer(
+                expectedToken = {
+                    PreferenceManager.getDefaultSharedPreferences(applicationContext)
+                        .getString("rpcToken", "").orEmpty()
+                },
+                state = remoteState,
+                commands = remoteCommands,
+            )
+            try {
+                server.start()
+                rpcServer = server
+            } catch (e: Exception) {
+                Log.e("MainActivity", "RPC server unavailable", e)
+                server.stop()
+            }
         }
-        if (rpcServer != null) return
-        val server = RpcHttpServer(
-            expectedToken = {
-                PreferenceManager.getDefaultSharedPreferences(applicationContext)
-                    .getString("rpcToken", "").orEmpty()
-            },
-            onFrameActiveCommand = { active -> runOnUiThread { setFrameActive(active) } },
-            onNextCommand = { runOnUiThread { nextAction() } },
-            onPreviousCommand = { runOnUiThread { previousAction() } },
-            onPauseCommand = { runOnUiThread { pauseAction() } },
-            onSettingsCommand = { runOnUiThread { settingsAction(authorizedOverride = true) } },
-            onBrightnessCommand = { brightness -> runOnUiThread { screenBrightnessAction(brightness) } },
-        )
-        try {
-            server.start()
-            rpcServer = server
-        } catch (e: Exception) {
-            Log.e("MainActivity", "RPC server unavailable", e)
-            server.stop()
+        if (mqttEnabled && brokerUri.isNotBlank()) {
+            mqttClient = MqttControlClient(
+                MqttSettings(brokerUri, mqttUsername, mqttPassword, deviceId),
+                remoteState,
+                remoteCommands,
+            ).also { it.start() }
         }
     }
+
+    @Suppress("DEPRECATION")
+    private fun appVersionName(): String = runCatching {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+    }.getOrDefault("unknown")
 
     private fun ensureWebView(): WebView {
         webView?.let { return it }
