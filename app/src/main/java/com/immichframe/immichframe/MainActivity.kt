@@ -781,16 +781,25 @@ class MainActivity : AppCompatActivity() {
 
         val cachedImage = if (currentImage == null) CachedImageStore.read(applicationContext) else null
         if (cachedImage != null) {
-            cachedImage.let {
-                currentImage = it
-                // The offline cache contains one last-known image. Never wait for a second
-                // portrait from an unavailable server; render the cached portrait full-frame.
-                showImage(
-                    it,
-                    persist = false,
-                    allowPortraitPair = false,
-                    afterPresented = ::getNextImage,
-                )
+            val presentCachedImage = {
+                if (currentImage == null && isFrameInactive != true) {
+                    currentImage = cachedImage
+                    // The offline cache contains one last-known image. Never wait for a second
+                    // portrait from an unavailable server; render the cached portrait full-frame.
+                    showImage(
+                        cachedImage,
+                        persist = false,
+                        allowPortraitPair = false,
+                        afterPresented = ::getNextImage,
+                    )
+                }
+            }
+            // A cold process start can reach this point before the decor view has dimensions.
+            // Rendering a 1x1 frame produces only a sampled background color on screen.
+            if (window.decorView.width > 1 && window.decorView.height > 1) {
+                presentCachedImage()
+            } else {
+                window.decorView.post(presentCachedImage)
             }
         } else {
             getNextImage()
