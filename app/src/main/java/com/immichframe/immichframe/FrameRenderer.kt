@@ -302,11 +302,23 @@ internal object FrameRenderer {
         )
         val fadeOut = fadeIn.reversedArray()
         val stops = floatArrayOf(0f, 0.2f, 0.5f, 0.8f, 1f)
-        fun gradient(left: Float, top: Float, right: Float, bottom: Float, colors: IntArray, horizontal: Boolean) {
+        fun gradient(
+            left: Float,
+            top: Float,
+            right: Float,
+            bottom: Float,
+            colors: IntArray,
+            horizontal: Boolean,
+            shaderStart: Float,
+            shaderEnd: Float,
+        ) {
             if (right <= left || bottom <= top) return
-            val shader = if (horizontal) LinearGradient(left, 0f, right, 0f, colors, stops, Shader.TileMode.CLAMP)
-            else LinearGradient(0f, top, 0f, bottom, colors, stops, Shader.TileMode.CLAMP)
-            canvas.drawRect(left, top, right, bottom, Paint().apply {
+            val shader = if (horizontal) {
+                LinearGradient(shaderStart, 0f, shaderEnd, 0f, colors, stops, Shader.TileMode.CLAMP)
+            } else {
+                LinearGradient(0f, shaderStart, 0f, shaderEnd, colors, stops, Shader.TileMode.CLAMP)
+            }
+            canvas.drawRect(left, top, right, bottom, Paint(Paint.DITHER_FLAG).apply {
                 this.shader = shader
                 xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
             })
@@ -314,14 +326,28 @@ internal object FrameRenderer {
         if (image.left > slot.left) {
             val leftFeather = minOf(feather, (image.left - slot.left) * 0.45f).coerceAtLeast(1f)
             val rightFeather = minOf(feather, (slot.right - image.right) * 0.45f).coerceAtLeast(1f)
-            gradient(image.left, image.top, image.left + leftFeather, image.bottom, fadeIn, true)
-            gradient(image.right - rightFeather, image.top, image.right, image.bottom, fadeOut, true)
+            // Draw through the letterbox area so a fractional photo boundary cannot leave
+            // a partially unmasked opaque pixel. CLAMP keeps that outer area transparent.
+            gradient(
+                slot.left.toFloat(), image.top, image.left + leftFeather, image.bottom,
+                fadeIn, true, image.left, image.left + leftFeather,
+            )
+            gradient(
+                image.right - rightFeather, image.top, slot.right.toFloat(), image.bottom,
+                fadeOut, true, image.right - rightFeather, image.right,
+            )
         }
         if (image.top > slot.top) {
             val topFeather = minOf(feather, (image.top - slot.top) * 0.45f).coerceAtLeast(1f)
             val bottomFeather = minOf(feather, (slot.bottom - image.bottom) * 0.45f).coerceAtLeast(1f)
-            gradient(image.left, image.top, image.right, image.top + topFeather, fadeIn, false)
-            gradient(image.left, image.bottom - bottomFeather, image.right, image.bottom, fadeOut, false)
+            gradient(
+                image.left, slot.top.toFloat(), image.right, image.top + topFeather,
+                fadeIn, false, image.top, image.top + topFeather,
+            )
+            gradient(
+                image.left, image.bottom - bottomFeather, image.right, slot.bottom.toFloat(),
+                fadeOut, false, image.bottom - bottomFeather, image.bottom,
+            )
         }
     }
 
