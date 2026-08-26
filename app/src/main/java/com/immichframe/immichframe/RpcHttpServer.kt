@@ -11,17 +11,22 @@ class RpcHttpServer(
 ) : NanoHTTPD(PORT) {
     private val router = RemoteApiRouter(state, commands)
     private val rateLimiters = ClientRateLimiters()
+    private val failedAuthRateLimiters = ClientRateLimiters(limit = 30)
 
     override fun serve(session: IHTTPSession): Response {
         if (session.method == Method.GET && session.uri == "/health") {
             return json(Response.Status.OK, JSONObject().put("available", true))
         }
 
+        val clientAddress = session.remoteIpAddress.orEmpty()
         val supplied = RpcSecurity.bearerToken(session.headers["authorization"])
         if (!RpcSecurity.authorized(expectedToken(), supplied)) {
+            if (!failedAuthRateLimiters.allow(clientAddress)) {
+                return json(Response.Status.TOO_MANY_REQUESTS, JSONObject().put("ok", false).put("error", "Rate limited"))
+            }
             return json(Response.Status.UNAUTHORIZED, JSONObject().put("ok", false).put("error", "Unauthorized"))
         }
-        if (!rateLimiters.allow(session.remoteIpAddress.orEmpty())) {
+        if (!rateLimiters.allow(clientAddress)) {
             return json(Response.Status.TOO_MANY_REQUESTS, JSONObject().put("ok", false).put("error", "Rate limited"))
         }
 

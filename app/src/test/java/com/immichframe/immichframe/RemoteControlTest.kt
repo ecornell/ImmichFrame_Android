@@ -61,6 +61,13 @@ class RemoteControlTest {
         assertFalse(joined.contains("ssl://broker"))
     }
 
+    @Test fun retainedCommandsAreRejectedButHomeAssistantBirthIsAccepted() {
+        assertFalse(shouldAcceptMqttMessage("immichframe/device/action/next", retained = true))
+        assertFalse(shouldAcceptMqttMessage("immichframe/device/display/set", retained = true))
+        assertTrue(shouldAcceptMqttMessage("immichframe/device/action/next", retained = false))
+        assertTrue(shouldAcceptMqttMessage("homeassistant/status", retained = true))
+    }
+
     @Test fun clientRateLimitsAreIndependentAndBounded() {
         val limits = ClientRateLimiters(limit = 1, windowMillis = 100, maxClients = 2)
         assertTrue(limits.allow("one", 0))

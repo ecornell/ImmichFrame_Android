@@ -1,0 +1,16 @@
+{
+  "frames": [
+    {
+      "name": "WF1561",
+      "serial": "192.168.1.100:5555",
+      "expectedModel": "WF1561",
+      "expectedDeviceSerial": "WF1561_HARDWARE_SERIAL",
+      "scanSubnet": "192.168.1"
+    },
+    {
+      "name": "W10J",
+      "serial": "10.10.0.100:5555",
+      "expectedModel": "w10j05"
+    }
+  ]
+}

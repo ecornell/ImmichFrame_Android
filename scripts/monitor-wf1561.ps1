@@ -187,6 +187,7 @@ try {
     if ($Record.bootCompleted -ne '1') { $problems += 'boot incomplete' }
     if (-not $Record.appPid) { $problems += 'ImmichFrame process missing' }
     if (-not $Record.panelPid) { $problems += 'OEM panel process missing' }
+    if ($Record.bootCompleted -eq '1' -and -not $Record.resumedApp) { $problems += 'ImmichFrame not foreground' }
     if ($Record.fotaInstalled -or $Record.fotaPid) { $problems += 'ADUPS FOTA returned' }
     if (-not $Record.homeCorrect) { $problems += 'preferred HOME changed' }
     if ($Record.pssKb -and $Record.pssKb -gt $MaxPssKb) { $problems += "high PSS ($($Record.pssKb) KB)" }

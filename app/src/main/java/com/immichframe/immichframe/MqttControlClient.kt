@@ -93,17 +93,22 @@ internal object MqttPayloads {
     }
 }
 
+internal fun shouldAcceptMqttMessage(topic: String, retained: Boolean): Boolean =
+    !retained || topic == "homeassistant/status"
+
 internal class MqttControlClient(
     private val settings: MqttSettings,
     private val state: RemoteStateStore,
     private val commands: RemoteCommands,
 ) {
     private var client: MqttAsyncClient? = null
+    @Volatile private var running = false
     private val stateListener: (RemoteFrameState) -> Unit = { publishState(it) }
 
-    fun start() {
-        if (client != null) return
+    fun start(): Boolean {
+        if (client != null) return true
         try {
+            running = true
             val mqtt = MqttAsyncClient(
                 settings.brokerUri,
                 "imf-${settings.deviceId}",
@@ -112,11 +117,16 @@ internal class MqttControlClient(
             client = mqtt
             mqtt.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
-                    subscribeAndPublish()
+                    if (running) subscribeAndPublish()
                 }
                 override fun connectionLost(cause: Throwable?) = Unit
                 override fun deliveryComplete(token: IMqttDeliveryToken?) = Unit
                 override fun messageArrived(topic: String, message: MqttMessage) {
+                    if (!running) return
+                    if (!shouldAcceptMqttMessage(topic, message.isRetained)) {
+                        Log.w(TAG, "Ignoring retained MQTT command on $topic")
+                        return
+                    }
                     handleMessage(topic, message.payload.toString(Charsets.UTF_8))
                 }
             })
@@ -138,27 +148,35 @@ internal class MqttControlClient(
                     Log.w(TAG, "MQTT connection failed: ${exception?.message}")
                 }
             })
+            return true
         } catch (e: Exception) {
+            running = false
             state.removeListener(stateListener)
+            client?.let { failedClient ->
+                runCatching { failedClient.disconnectForcibly(250, 250, false) }
+                runCatching { failedClient.close() }
+            }
             client = null
             Log.e(TAG, "Unable to start MQTT", e)
+            return false
         }
     }
 
     fun stop() {
+        running = false
         state.removeListener(stateListener)
         val mqtt = client ?: return
-        runCatching {
-            if (mqtt.isConnected) {
+        client = null
+        if (mqtt.isConnected) {
+            runCatching {
                 mqtt.publish(
                     "${settings.baseTopic}/availability",
                     MqttMessage("offline".toByteArray()).apply { qos = 1; isRetained = true },
                 ).waitForCompletion(1_000)
-                mqtt.disconnectForcibly(1_000, 1_000, false)
             }
-            mqtt.close()
         }
-        client = null
+        runCatching { mqtt.disconnectForcibly(1_000, 1_000, false) }
+        runCatching { mqtt.close() }
     }
 
     private fun subscribeAndPublish() {
@@ -211,6 +229,7 @@ internal class MqttControlClient(
     }
 
     private fun publish(topic: String, payload: String, retained: Boolean) {
+        if (!running) return
         val mqtt = client ?: return
         if (!mqtt.isConnected) return
         try {

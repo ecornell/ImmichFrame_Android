@@ -1235,12 +1235,12 @@ class MainActivity : AppCompatActivity() {
             rpcEnabled, token, mqttEnabled, brokerUri, mqttUsername, mqttPassword, deviceId,
         ).joinToString("\u0000")
         if (configurationKey == remoteConfigurationKey) return
-        remoteConfigurationKey = configurationKey
 
         rpcServer?.stop()
         rpcServer = null
         mqttClient?.stop()
         mqttClient = null
+        var configured = true
 
         if (rpcEnabled && token.isNotBlank()) {
             val server = RpcHttpServer(
@@ -1257,15 +1257,22 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e("MainActivity", "RPC server unavailable", e)
                 server.stop()
+                configured = false
             }
         }
         if (mqttEnabled && brokerUri.isNotBlank()) {
-            mqttClient = MqttControlClient(
+            val candidate = MqttControlClient(
                 MqttSettings(brokerUri, mqttUsername, mqttPassword, deviceId),
                 remoteState,
                 remoteCommands,
-            ).also { it.start() }
+            )
+            if (candidate.start()) {
+                mqttClient = candidate
+            } else {
+                configured = false
+            }
         }
+        remoteConfigurationKey = configurationKey.takeIf { configured }
     }
 
     @Suppress("DEPRECATION")

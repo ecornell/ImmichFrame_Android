@@ -26,12 +26,16 @@ You can find the documentation [here](https://immichframe.dev).
   bash gradlew testDebugUnitTest lintDebug assembleDebug
   ```
 
+The same validation is available as `scripts/validate.sh`. See
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the multi-frame deployment and verification runbook.
+
 ## Dedicated frames and WF1561
 
 Native mode is the default because old dedicated devices may ship an unusably old WebView. The
 Euphro WF1561 deployment is Android 8.1/API 27 with 1 GB RAM, so keep image dimensions bounded and
-perform a 24–72 hour memory/network-loss soak test before deployment. RPC is disabled by default;
-when enabled it requires `POST` and `Authorization: Bearer <RPC token>`.
+perform a 24–72 hour memory/network-loss soak test before deployment. RPC is disabled by default.
+Legacy command routes require `POST`; the versioned API uses `GET`, `PUT`, and `POST`. Every route
+requires `Authorization: Bearer <RPC token>` except the availability-only `GET /health` probe.
 
 ### REST and Home Assistant control
 
@@ -86,9 +90,11 @@ presentation mode, and app version. It also publishes a retained availability st
 last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
 message. The generated device ID is stable across upgrades as long as application data is retained.
 
-Both interfaces are intended only for a trusted LAN. Plain `http://` and `tcp://` expose commands
-and credentials to the local network; do not port-forward either interface to the internet. MQTT
-command messages are never retained, preventing stale commands from replaying after reconnect.
+Both interfaces are intended only for a trusted LAN. Plain `http://`, `tcp://`, and `ws://` expose commands
+and credentials to the local network; do not port-forward either interface to the internet. Home
+Assistant publishes commands without retention, and the frame also rejects retained command
+messages so stale actions cannot replay after reconnect. The retained `homeassistant/status` birth
+message remains accepted so discovery and state can be resynchronized.
 
 Native rendering uses viewport-sized output frames, equal fixed slots for paired portraits,
 per-photo metadata, sampled decoding, soft/average/black background choices, fit/crop scaling,
