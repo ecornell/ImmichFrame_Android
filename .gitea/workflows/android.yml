@@ -36,7 +36,7 @@ jobs:
           -Dorg.gradle.jvmargs="-Xmx1024m -Dfile.encoding=UTF-8"
           -Pkotlin.compiler.execution.strategy=in-process
           testDebugUnitTest lintDebug assembleDebug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
           name: android-debug-validation
