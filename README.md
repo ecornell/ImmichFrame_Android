@@ -138,24 +138,9 @@ the protected local backup. Windows Platform Tools at
 `%LOCALAPPDATA%\Android\platform-tools\adb.exe` are the proven client for this WSL setup. Discover
 the current frame address by scanning the LAN for TCP 5555 because its IP and MAC change at reboot.
 
-After the validation command above, copy `app/build/outputs/apk/debug/app-debug.apk` to a Windows
-path and deploy it without uninstalling the existing debug package:
-
-```powershell
-$adb = "$env:LOCALAPPDATA\Android\platform-tools\adb.exe"
-& $adb connect FRAME-IP`:5555
-& $adb -s FRAME-IP`:5555 install -r C:\Users\elija\AppData\Local\Temp\ImmichFrame-debug.apk
-& $adb -s FRAME-IP`:5555 shell cmd package set-home-activity --user 0 `
-  com.immichframe.immichframe.debug/com.immichframe.immichframe.MainActivity
-```
-
-Prefer the included deployment wrapper, which performs those steps in the correct order and also
-dismisses a resolver that Android 8.1 may have opened while replacing the HOME package:
-
-```powershell
-.\scripts\deploy-wf1561.ps1 -FrameIp FRAME-IP `
-  -ApkPath C:\Users\elija\AppData\Local\Temp\ImmichFrame-debug.apk
-```
+Do not install directly with ADB or use the retired `deploy-wf1561.ps1` path. Follow
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), which requires artifact/signature checks, a verified
+rollback APK, hardware identity, an explicit release-ID approval, and post-install verification.
 
 Install the optional read-only host monitor after deployment. It runs for less than two minutes
 every five minutes, records only health/resource summaries, keeps 14 days of daily CSV history, and
@@ -177,7 +162,7 @@ WF1561 hardware serial, so another Android ADB device is not mistaken for the fr
 
 Android may clear its preferred-HOME record whenever a HOME-capable APK is replaced. Applications
 cannot silently grant themselves HOME status, so every deployment must run
-`cmd package set-home-activity` after `install -r`; the wrapper automates this and verifies the
+`cmd package set-home-activity` after package replacement; the guarded deployment script automates this and verifies the
 resolved component. Do not send HOME or click the resolver between those steps.
 
 Verify with `cmd package resolve-activity` before changing foreground state. To restart the preferred
@@ -185,9 +170,9 @@ debug HOME, use only `am force-stop com.immichframe.immichframe.debug` and let A
 once. The authoritative live-device state and rollback commands are maintained in the sibling
 `wf1561-photo-frame/HANDOFF.md` repository.
 
-Updates must use the same application ID and signing certificate. Test an upgrade with `adb install
--r app.apk`, verify settings and HOME selection are retained, then reboot with and without the
-backend available. Never clear package data unless reconfiguration is acceptable.
+Updates must use the same application ID and signing certificate. Use the guarded deployment
+workflow to test an upgrade, verify settings and HOME selection are retained, then reboot with and
+without the backend available. Never clear package data unless reconfiguration is acceptable.
 
 Recommended release checks include repeated HOME events, server loss/recovery, ten scheduled
 sleep/wake cycles, physical-panel verification (not only `screencap`), `dumpsys meminfo`, and an
