@@ -31,5 +31,7 @@ google-services.json
 
 # Android Profiling
 *.hprof
+__pycache__/
+*.pyc
 
 signing.properties

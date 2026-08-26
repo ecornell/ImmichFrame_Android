@@ -7,6 +7,8 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Tell the caller to reload preferences when this screen closes.
+        setResult(RESULT_OK)
         supportFragmentManager
             .beginTransaction()
             .replace(android.R.id.content, SettingsFragment())

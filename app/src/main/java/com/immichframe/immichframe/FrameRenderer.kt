@@ -210,7 +210,10 @@ internal object FrameRenderer {
         canvas.clipRect(slot)
         val destination = destination(content.width(), content.height(), slot, scale)
         if (scale == FrameScale.FIT && featherPx > 0) {
-            val layer = canvas.saveLayer(destination, null)
+            // Keep the photo edge away from the offscreen layer boundary. A layer bounded
+            // exactly to the fractional destination can leave a one-pixel opaque seam when
+            // Android rounds and composites that boundary on RGB_565 canvases.
+            val layer = canvas.saveLayer(RectF(slot), null)
             canvas.drawBitmap(image, content, destination, paint)
             drawFeatherMask(canvas, slot, destination, featherPx.toFloat())
             canvas.restoreToCount(layer)

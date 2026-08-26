@@ -1,0 +1,9 @@
+{
+  "networkRecovery": "passed",
+  "sleepWakeCycles": 10,
+  "soakHours": 72,
+  "evidence": [
+    "path/to/monitor/history-YYYY-MM-DD.csv",
+    "device-repository qualification note"
+  ]
+}

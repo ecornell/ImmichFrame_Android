@@ -18,6 +18,7 @@ if [[ ! -d "$ANDROID_HOME" ]]; then
 fi
 
 cd "$repo_root"
+python3 -m unittest discover -s scripts/tests
 if (($#)); then
   exec bash gradlew "$@"
 else

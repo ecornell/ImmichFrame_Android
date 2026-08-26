@@ -10,7 +10,8 @@
     {
       "name": "W10J",
       "serial": "10.10.0.100:5555",
-      "expectedModel": "w10j05"
+      "expectedModel": "w10j05",
+      "expectedDeviceSerial": "W10J_HARDWARE_SERIAL"
     }
   ]
 }
