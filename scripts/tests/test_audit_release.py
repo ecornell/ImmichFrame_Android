@@ -46,6 +46,9 @@ class AuditReleaseTest(unittest.TestCase):
             },
         }), encoding="utf-8")
         self.qualification.write_text(json.dumps({
+            "schemaVersion": 2,
+            "releaseId": "v54-test",
+            "apkSha256": audit_release.sha256(self.target),
             "networkRecovery": "passed",
             "sleepWakeCycles": 10,
             "soakHours": 24,
@@ -102,6 +105,24 @@ class AuditReleaseTest(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual("conditionally-ready", report["status"])
         self.assertIn("fewer than 10 sleep/wake cycles are recorded", report["outstanding"])
+
+    def test_android_tool_environment_prepends_java_home(self):
+        with mock.patch.dict(audit_release.os.environ, {
+                "JAVA_HOME": "/opt/test-jdk", "PATH": "/usr/bin"}, clear=True):
+            environment = audit_release.android_tool_environment()
+        self.assertEqual("/opt/test-jdk", environment["JAVA_HOME"])
+        self.assertEqual(
+            f"/opt/test-jdk/bin{audit_release.os.pathsep}/usr/bin",
+            environment["PATH"],
+        )
+
+    def test_qualification_is_bound_to_release_hash(self):
+        evidence = json.loads(self.qualification.read_text(encoding="utf-8"))
+        evidence["apkSha256"] = "wrong"
+        self.qualification.write_text(json.dumps(evidence), encoding="utf-8")
+        code, report = self.run_audit()
+        self.assertEqual(1, code)
+        self.assertIn("qualification APK hash does not match target", report["failures"])
 
 
 if __name__ == "__main__":

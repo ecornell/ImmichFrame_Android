@@ -290,7 +290,7 @@ internal object FrameRenderer {
         return pixel.getPixel(0, 0).also { pixel.recycle() }
     }
 
-    private fun drawFeatherMask(canvas: Canvas, slot: Rect, image: RectF, feather: Float) {
+    internal fun drawFeatherMask(canvas: Canvas, slot: Rect, image: RectF, feather: Float) {
         val opaque = Color.WHITE
         val transparent = Color.TRANSPARENT
         val fadeIn = intArrayOf(

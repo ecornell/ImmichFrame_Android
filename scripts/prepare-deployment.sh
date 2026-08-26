@@ -20,11 +20,11 @@ scripts/validate.sh
 sdk="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export JAVA_HOME="${JAVA_HOME:-$HOME/.local/share/jdks/temurin-17}"
 export PATH="$JAVA_HOME/bin:$PATH"
-apkanalyzer="$sdk/cmdline-tools/latest/bin/apkanalyzer"
-apksigner="$sdk/build-tools/36.0.0/apksigner"
+apkanalyzer="$(python3 scripts/resolve-android-tools.py --sdk "$sdk" --get apkanalyzer)"
+apksigner="$(python3 scripts/resolve-android-tools.py --sdk "$sdk" --get apksigner)"
 apk="app/build/outputs/apk/debug/app-debug.apk"
-[[ -x "$apkanalyzer" ]] || { echo "Missing $apkanalyzer" >&2; exit 1; }
-[[ -x "$apksigner" ]] || { echo "Missing $apksigner" >&2; exit 1; }
+[[ -f "$apkanalyzer" ]] || { echo "Missing $apkanalyzer" >&2; exit 1; }
+[[ -f "$apksigner" ]] || { echo "Missing $apksigner" >&2; exit 1; }
 
 application_id="$($apkanalyzer manifest application-id "$apk")"
 version_code="$($apkanalyzer manifest version-code "$apk")"

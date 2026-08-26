@@ -31,8 +31,9 @@ android {
         applicationId = "com.immichframe.immichframe"
         minSdk = 23
         targetSdk = 36
-        versionCode = 54
-        versionName = "1.0.54.0"
+        versionCode = 55
+        versionName = "1.0.55.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "ImmichFrame"
         manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
     }
@@ -88,4 +89,6 @@ dependencies {
     implementation(libs.androidx.preference)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

@@ -4,8 +4,14 @@ param(
     [ValidatePattern('^[0-9a-fA-F:.]+$')]
     [string]$FrameIp,
 
-    [ValidatePattern('^[0-9a-fA-F]+$')]
+    [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$ExpectedDeviceSerial = 'c3d9b8674f4b94f6',
+
+    [string]$ExpectedModel = 'WF1561',
+
+    [string]$PanelPackage = 'com.zeasn.frame',
+
+    [bool]$RequirePanelProcess = $true,
 
     [string]$AdbPath = "$env:LOCALAPPDATA\Android\platform-tools\adb.exe",
 
@@ -25,7 +31,8 @@ if (-not (Test-Path -LiteralPath $monitorScript)) { throw "Monitor script was no
 # The monitor performs only reads against the frame and resolves the current random IP by hardware
 # serial. Its host-side JSON/history writes provide the evidence trail used by qualification.
 & $monitorScript -FrameIp $FrameIp -ExpectedDeviceSerial $ExpectedDeviceSerial `
-    -AdbPath $AdbPath -LogDirectory $MonitorDirectory | Out-Null
+    -ExpectedModel $ExpectedModel -PanelPackage $PanelPackage `
+    -RequirePanelProcess $RequirePanelProcess -AdbPath $AdbPath -LogDirectory $MonitorDirectory | Out-Null
 $monitor = Get-Content -LiteralPath (Join-Path $MonitorDirectory 'latest.json') -Raw | ConvertFrom-Json
 
 $logSignals = [ordered]@{
@@ -66,12 +73,32 @@ if ($monitor.serial -and $monitor.status -ne 'offline') {
 
 $versionCode = [regex]::Match($packageInfo, 'versionCode=(\d+)').Groups[1].Value
 $versionName = [regex]::Match($packageInfo, 'versionName=([^\s]+)').Groups[1].Value
+$installedApkSha256 = ''
+if ($monitor.serial -and $monitor.status -ne 'offline') {
+    $installedPathText = (& $AdbPath -s $monitor.serial shell pm path $Package 2>&1 | Out-String)
+    $installedPath = [regex]::Match($installedPathText, 'package:(\S+)').Groups[1].Value
+    if ($installedPath) {
+        $temporaryApk = [System.IO.Path]::GetTempFileName()
+        try {
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & $AdbPath -s $monitor.serial pull $installedPath $temporaryApk 2>&1 | Out-Null
+                $pullExitCode = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $previousErrorActionPreference }
+            if ($pullExitCode -eq 0) {
+                $installedApkSha256 = (Get-FileHash -LiteralPath $temporaryApk -Algorithm SHA256).Hash.ToLowerInvariant()
+            } else { $collectionErrors += 'installed APK hash unavailable' }
+        } finally { Remove-Item -LiteralPath $temporaryApk -Force -ErrorAction SilentlyContinue }
+    } else { $collectionErrors += 'installed APK path unavailable' }
+}
 $bundle = [ordered]@{
     schemaVersion = 1
     collectedAt = (Get-Date).ToUniversalTime().ToString('o')
     readOnly = $true
     monitor = $monitor
-    package = [ordered]@{ name = $Package; versionCode = $versionCode; versionName = $versionName }
+    package = [ordered]@{ name = $Package; versionCode = $versionCode; versionName = $versionName;
+        apkSha256 = $installedApkSha256 }
     logSignals = $logSignals
     collectionErrors = $collectionErrors
 }

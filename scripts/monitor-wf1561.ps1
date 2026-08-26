@@ -4,8 +4,14 @@ param(
     [ValidatePattern('^[0-9a-fA-F:.]+$')]
     [string]$FrameIp,
 
-    [ValidatePattern('^[0-9a-fA-F]+$')]
+    [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$ExpectedDeviceSerial = 'c3d9b8674f4b94f6',
+
+    [string]$ExpectedModel = 'WF1561',
+
+    [string]$PanelPackage = 'com.zeasn.frame',
+
+    [bool]$RequirePanelProcess = $true,
 
     [string]$AdbPath = "$env:LOCALAPPDATA\Android\platform-tools\adb.exe",
 
@@ -25,7 +31,6 @@ $ErrorActionPreference = 'Stop'
 $Serial = "${FrameIp}:5555"
 $Package = 'com.immichframe.immichframe.debug'
 $Component = "$Package/com.immichframe.immichframe.MainActivity"
-$PanelPackage = 'com.zeasn.frame'
 $FotaPackage = 'com.adups.fota'
 
 if (-not (Test-Path -LiteralPath $AdbPath)) {
@@ -37,6 +42,8 @@ $Now = Get-Date
 $Record = [ordered]@{
     timestamp = $Now.ToString('o')
     serial = $Serial
+    deviceSerial = $ExpectedDeviceSerial
+    model = $null
     status = 'offline'
     bootCompleted = $null
     appPid = $null
@@ -61,7 +68,12 @@ function Invoke-AdbText {
 function Invoke-AdbOptionalText {
     param([string[]]$Arguments)
     # pidof returns 1 when a process is absent; absence is monitor data, not a transport error.
-    return (& $AdbPath @Arguments 2>&1 | Out-String).Trim()
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $rawOutput = & $AdbPath @Arguments 2>&1
+    } finally { $ErrorActionPreference = $previousErrorActionPreference }
+    return ($rawOutput | Out-String).Trim()
 }
 
 function Test-TcpPort {
@@ -84,7 +96,8 @@ function Test-FrameEndpoint {
     $state = Invoke-AdbOptionalText -Arguments @('-s', "${Ip}:5555", 'get-state')
     if ($state -ne 'device') { return $false }
     $deviceSerial = Invoke-AdbOptionalText -Arguments @('-s', "${Ip}:5555", 'shell', 'getprop', 'ro.serialno')
-    return $deviceSerial -eq $ExpectedDeviceSerial
+    $model = Invoke-AdbOptionalText -Arguments @('-s', "${Ip}:5555", 'shell', 'getprop', 'ro.product.model')
+    return $deviceSerial -eq $ExpectedDeviceSerial -and $model -eq $ExpectedModel
 }
 
 function Find-OpenAdbAddresses {
@@ -155,8 +168,11 @@ try {
     }
 
     $Record.bootCompleted = Invoke-AdbText -Arguments @('-s', $Serial, 'shell', 'getprop', 'sys.boot_completed')
+    $Record.model = Invoke-AdbText -Arguments @('-s', $Serial, 'shell', 'getprop', 'ro.product.model')
     $Record.appPid = Invoke-AdbOptionalText -Arguments @('-s', $Serial, 'shell', 'pidof', $Package)
-    $Record.panelPid = Invoke-AdbOptionalText -Arguments @('-s', $Serial, 'shell', 'pidof', $PanelPackage)
+    if ($PanelPackage) {
+        $Record.panelPid = Invoke-AdbOptionalText -Arguments @('-s', $Serial, 'shell', 'pidof', $PanelPackage)
+    }
     $Record.fotaPid = Invoke-AdbOptionalText -Arguments @('-s', $Serial, 'shell', 'pidof', $FotaPackage)
 
     $fotaPackages = Invoke-AdbText -Arguments @('-s', $Serial, 'shell', 'pm', 'list', 'packages', '--user', '0', $FotaPackage)
@@ -177,7 +193,7 @@ try {
     $cpuMatch = [regex]::Match($cpuinfo, "(?m)^\s*([0-9.]+)%\s+\d+/$([regex]::Escape($Package))")
     if ($cpuMatch.Success) { $Record.cpuPercent = [double]$cpuMatch.Groups[1].Value }
 
-    $thermal = Invoke-AdbText -Arguments @('-s', $Serial, 'shell', 'cat', '/sys/class/thermal/thermal_zone*/temp')
+    $thermal = Invoke-AdbOptionalText -Arguments @('-s', $Serial, 'shell', 'cat', '/sys/class/thermal/thermal_zone*/temp')
     $temperatures = [regex]::Matches($thermal, '\d+') | ForEach-Object { [int]$_.Value }
     if ($temperatures.Count -gt 0) {
         $Record.maxTemperatureMilliC = ($temperatures | Measure-Object -Maximum).Maximum
@@ -186,7 +202,7 @@ try {
     $problems = @()
     if ($Record.bootCompleted -ne '1') { $problems += 'boot incomplete' }
     if (-not $Record.appPid) { $problems += 'ImmichFrame process missing' }
-    if (-not $Record.panelPid) { $problems += 'OEM panel process missing' }
+    if ($RequirePanelProcess -and -not $Record.panelPid) { $problems += 'OEM panel process missing' }
     if ($Record.bootCompleted -eq '1' -and -not $Record.resumedApp) { $problems += 'ImmichFrame not foreground' }
     if ($Record.fotaInstalled -or $Record.fotaPid) { $problems += 'ADUPS FOTA returned' }
     if (-not $Record.homeCorrect) { $problems += 'preferred HOME changed' }

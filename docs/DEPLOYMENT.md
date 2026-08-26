@@ -7,7 +7,11 @@ replacement.
 ## 1. Preflight
 
 1. Start from a clean, committed source tree: `git status --short` must be empty.
-2. Prepare a verified APK from the clean tree. This runs validation, verifies the debug application
+2. Give every distinct APK a new `versionCode`, even for a small hotfix. Reusing a version code
+   makes package evidence ambiguous and prevents the immediately previous APK from being a clean
+   rollback target. Re-running the exact same release is idempotent; a different APK with the
+   installed version code is rejected.
+3. Prepare a verified APK from the clean tree. This runs validation, verifies the debug application
    ID and APK signature, copies the artifact, verifies the copied hash, and emits deployment
    metadata containing source commit, version, signer, APK SHA-256, validation results, and a
    verified rollback artifact. The rollback APK must use the same application ID and signer and
@@ -22,7 +26,7 @@ replacement.
    cat app/build/outputs/apk/debug/deployment-metadata.json
    ```
 
-3. Optionally create qualification evidence from `scripts/qualification.example.json`, then audit
+4. Optionally create qualification evidence from `scripts/qualification.example.json`, then audit
    readiness. Missing qualification evidence produces `conditionally-ready`; artifact, signer,
    provenance, or rollback failures produce `not-ready`:
 
@@ -33,7 +37,16 @@ replacement.
      --output app/build/outputs/release-readiness.json
    ```
 
-4. Copy `scripts/frames.example.json` to the untracked `scripts/frames.local.json`. Treat the
+   Prefer deriving the file from monitor history instead of entering counters manually:
+
+   ```bash
+   scripts/collect-qualification.py \
+     --metadata app/build/outputs/apk/debug/deployment-metadata.json \
+     --history path/to/history-YYYY-MM-DD.csv \
+     --output app/build/outputs/qualification.json
+   ```
+
+5. Copy `scripts/frames.example.json` to the untracked `scripts/frames.local.json`. Treat the
    WF1561 `serial` as a last-known endpoint only: configure `scanSubnet` and
    `expectedDeviceSerial` so the script can rediscover its random post-reboot IP and verify the
    physical frame before installation. Never deploy to a device whose model or hardware serial
@@ -41,7 +54,10 @@ replacement.
 
 ## 2. Deploy
 
-From PowerShell or WSL via `powershell.exe`:
+From PowerShell or WSL via `powershell.exe`. Before approval, verify that the Windows paths supplied
+for `apkanalyzer.bat`, `apksigner.bat`, and `adb.exe` all exist. A WSL-only Android SDK is not a
+substitute for those Windows tools; install the Windows command-line/build tools or use a reviewed
+repository-provided bridge rather than creating ad hoc deployment commands.
 
 ```powershell
 .\scripts\deploy-frames.ps1 `
@@ -59,7 +75,8 @@ The script tries the manifest hint and already-known ADB devices first. When tho
 with `scanSubnet` configured is discovered by a bounded TCP 5555 scan of that `/24`. The expected
 model and hardware serial are checked before any mutation. Mutable deployment also requires an
 exact release-ID approval, fresh APK manifest/signature inspection, target and rollback hash
-checks, matching target/rollback/installed signers, and an upgrade-or-same version code. The script then installs with
+checks, and matching target/rollback/installed signers. A normal deployment must increase the
+installed version code unless the exact approved APK hash is already installed. The script then installs with
 `adb install -r`, restores HOME, starts the single-task Activity once, and verifies version, PID,
 HOME, and resumed Activity for every frame. It stops on the first failed safety check.
 Use `-VerifyOnly` without an APK or metadata to run the connection, model, installed-version, HOME,
@@ -75,7 +92,13 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
 - Run the WF1561 monitor immediately and confirm `healthy`.
 - For a versioned read-only health bundle including non-sensitive classifications from a bounded
   logcat window, run
-  `scripts/collect-frame-health.ps1` and retain its JSON output with the deployment result.
+`scripts/collect-frame-health.ps1` and retain its JSON output with the deployment result.
+- For every configured model, run `collect-frames-health.ps1`; model capabilities in the local
+  manifest determine whether an OEM panel process is required. Health bundles include the observed
+  installed APK hash.
+- Capture rendering evidence with `capture-render-regression.ps1`, then run
+  `analyze-render-seam.py SCREENSHOT.png`. The analyzer detects the historical consistent
+  one-pixel vertical seam; it supplements rather than replaces physical-panel inspection.
 - Confirm settings survived, including server URL, native/WebView mode, active schedule, RPC, and
   MQTT configuration.
 - For remote-control changes, verify authenticated REST state and one idempotent command. When MQTT
@@ -113,3 +136,13 @@ identity, hash, signer, rollback, version, and approval gates.
 Record the deployed commit, APK SHA-256, version, frame serial/model, and verification outcome in
 the device-specific operational repository. A source tag should describe what was actually
 deployed, not merely what was built.
+
+At minimum, retain a sanitized record containing the readiness status and gaps, deployment and
+post-deployment verification results, health classification, screenshot SHA-256, and manual visual
+result. Temporary files and screenshots may be deleted, so a successful chat transcript is not an
+operational record. Never upgrade the readiness status merely because a visual smoke test passed;
+network recovery, sleep/wake cycling, and soak requirements remain separate qualification evidence.
+
+Create a content-addressed sanitized evidence bundle with `archive-release.py` after all checks.
+The bundle retains the exact target and rollback APKs as well as sanitized evidence. The project
+`deployment-closeout` skill defines the required inputs and stop conditions.

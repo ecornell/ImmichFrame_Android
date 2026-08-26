@@ -1,9 +1,12 @@
 {
+  "schemaVersion": 2,
+  "releaseId": "v55-APK_HASH_PREFIX",
+  "apkSha256": "TARGET_APK_SHA256",
   "networkRecovery": "passed",
   "sleepWakeCycles": 10,
   "soakHours": 72,
+  "devices": ["FRAME_IDENTITY"],
   "evidence": [
-    "path/to/monitor/history-YYYY-MM-DD.csv",
-    "device-repository qualification note"
+    { "path": "history-YYYY-MM-DD.csv", "sha256": "EVIDENCE_SHA256" }
   ]
 }

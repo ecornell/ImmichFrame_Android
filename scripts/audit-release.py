@@ -24,15 +24,34 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
+def android_tool_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    if not env.get("JAVA_HOME"):
+        bundled_jdk = pathlib.Path.home() / ".local/share/jdks/temurin-17"
+        if (bundled_jdk / "bin/java").is_file():
+            env["JAVA_HOME"] = str(bundled_jdk)
+    if env.get("JAVA_HOME"):
+        java_bin = str(pathlib.Path(env["JAVA_HOME"]) / "bin")
+        env["PATH"] = java_bin + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def inspect_apk(path: pathlib.Path) -> dict:
     sdk = pathlib.Path(os.environ.get("ANDROID_HOME", pathlib.Path.home() / "Android/Sdk"))
-    analyzer = sdk / "cmdline-tools/latest/bin/apkanalyzer"
-    signer = sdk / "build-tools/36.0.0/apksigner"
-    if not analyzer.is_file() or not signer.is_file():
-        raise RuntimeError("apkanalyzer or apksigner is unavailable")
+    resolver_path = pathlib.Path(__file__).with_name("resolve-android-tools.py")
+    spec = __import__("importlib.util").util.spec_from_file_location("android_tools_resolver", resolver_path)
+    resolver = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(resolver)
+    tools = resolver.resolve(sdk)
+    analyzer, signer = pathlib.Path(tools["apkanalyzer"]), pathlib.Path(tools["apksigner"])
 
     def run(*command: str) -> str:
-        return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
+        return subprocess.check_output(
+            command,
+            text=True,
+            stderr=subprocess.STDOUT,
+            env=android_tool_environment(),
+        ).strip()
 
     run(str(signer), "verify", str(path))
     certs = run(str(signer), "verify", "--print-certs", str(path))
@@ -110,6 +129,11 @@ def main() -> int:
             failures.append("qualification evidence file is missing")
         else:
             qualification = json.loads(args.qualification.read_text(encoding="utf-8"))
+            if qualification.get("schemaVersion", 1) >= 2:
+                if qualification.get("releaseId") != metadata.get("releaseId"):
+                    failures.append("qualification releaseId does not match target")
+                if qualification.get("apkSha256") != metadata.get("apkSha256"):
+                    failures.append("qualification APK hash does not match target")
             if qualification.get("networkRecovery") != "passed":
                 outstanding.append("network recovery is not recorded as passed")
             sleep_wake = qualification.get("sleepWakeCycles", 0)

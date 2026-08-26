@@ -27,6 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'DeploymentPolicy.psm1') -Force
 $Package = 'com.immichframe.immichframe.debug'
 $Component = "$Package/com.immichframe.immichframe.MainActivity"
 
@@ -34,7 +35,10 @@ if (-not $ApkAnalyzerPath -and $env:ANDROID_HOME) {
     $ApkAnalyzerPath = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\apkanalyzer.bat'
 }
 if (-not $ApkSignerPath -and $env:ANDROID_HOME) {
-    $ApkSignerPath = Join-Path $env:ANDROID_HOME 'build-tools\36.0.0\apksigner.bat'
+    $buildTools = Get-ChildItem -LiteralPath (Join-Path $env:ANDROID_HOME 'build-tools') -Directory `
+        -ErrorAction SilentlyContinue | Sort-Object { [version]$_.Name } -Descending
+    $ApkSignerPath = $buildTools | ForEach-Object { Join-Path $_.FullName 'apksigner.bat' } |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
 function Get-ApkFacts {
@@ -62,6 +66,9 @@ if (-not $manifest.frames -or $manifest.frames.Count -eq 0) { throw 'Frame manif
 $apkHash = $null
 $deployment = $null
 if (-not $VerifyOnly) {
+    if (-not $OutputJsonPath) {
+        throw 'Mutable deployment requires -OutputJsonPath for the per-frame audit record'
+    }
     if (-not (Test-Path -LiteralPath $ApkPath)) { throw "APK was not found at $ApkPath" }
     if (-not $DeploymentMetadataPath -or -not (Test-Path -LiteralPath $DeploymentMetadataPath)) {
         throw 'Mutable deployment requires -DeploymentMetadataPath from prepare-deployment.sh'
@@ -123,6 +130,15 @@ if (-not $VerifyOnly) {
     }
 }
 $results = @()
+
+function Write-ResultsJson {
+    if (-not $OutputJsonPath) { return }
+    Write-DeploymentResultsJson -Items @($results) -OutputPath $OutputJsonPath
+}
+
+# Create the audit destination before touching the first frame. Completed frame results are
+# persisted after each iteration so a later-frame failure cannot erase earlier mutations.
+Write-ResultsJson
 
 function Invoke-Adb {
     param([string]$Serial, [string[]]$Arguments)
@@ -269,6 +285,7 @@ foreach ($frame in $manifest.frames) {
     }
 
     if (-not $VerifyOnly) {
+        $alreadyInstalled = $false
         $beforePackageInfo = Invoke-Adb -Serial $serial -Arguments @('shell', 'dumpsys', 'package', $Package)
         $installedVersionCode = [regex]::Match($beforePackageInfo, 'versionCode=(\d+)').Groups[1].Value
         if (-not $installedVersionCode) { throw "[$name] Unable to determine installed version" }
@@ -285,21 +302,35 @@ foreach ($frame in $manifest.frames) {
         try {
             Invoke-Adb -Serial $serial -Arguments @('pull', $installedPath, $installedCopy) | Out-Null
             $installedFacts = Get-ApkFacts -Path $installedCopy
+            $installedHash = (Get-FileHash -LiteralPath $installedCopy -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($installedFacts.applicationId -ne $Package -or
                 $installedFacts.signerSha256 -ne $approvedFacts.signerSha256) {
                 throw "[$name] Installed package identity or signer differs from target; refusing replacement"
             }
+            if (-not $Rollback -and $approvedFacts.versionCode -eq [int64]$installedVersionCode) {
+                try {
+                    $alreadyInstalled = (Get-NormalDeploymentAction -TargetVersionCode $approvedFacts.versionCode `
+                        -TargetApkSha256 $approvedApkHash -InstalledVersionCode $installedVersionCode `
+                        -InstalledApkSha256 $installedHash) -eq 'skip'
+                } catch {
+                    throw "[$name] $($_.Exception.Message); increment versionCode before deployment"
+                }
+            }
         } finally {
             Remove-Item -LiteralPath $installedCopy -Force -ErrorAction SilentlyContinue
         }
-        Write-Host "[$name] Installing approved APK $approvedApkHash"
-        $installArguments = if ($Rollback) {
-            @('install', '-r', '-d', $approvedApkPath)
+        if ($alreadyInstalled) {
+            Write-Host "[$name] Approved APK is already installed; skipping package replacement"
         } else {
-            @('install', '-r', $approvedApkPath)
+            Write-Host "[$name] Installing approved APK $approvedApkHash"
+            $installArguments = if ($Rollback) {
+                @('install', '-r', '-d', $approvedApkPath)
+            } else {
+                @('install', '-r', $approvedApkPath)
+            }
+            $install = Invoke-Adb -Serial $serial -Arguments $installArguments
+            if ($install -notmatch '(?m)^Success$') { throw "[$name] Installation did not report Success: $install" }
         }
-        $install = Invoke-Adb -Serial $serial -Arguments $installArguments
-        if ($install -notmatch '(?m)^Success$') { throw "[$name] Installation did not report Success: $install" }
 
         Invoke-Adb -Serial $serial -Arguments @(
             'shell', 'cmd', 'package', 'set-home-activity', '--user', '0', $Component
@@ -324,6 +355,27 @@ foreach ($frame in $manifest.frames) {
         $versionName -ne $approvedFacts.versionName)) {
         throw "[$name] Installed version $versionName ($versionCode) does not match approved target"
     }
+    $observedApkHash = $null
+    if ($deployment) {
+        $observedPathOutput = Invoke-Adb -Serial $serial -Arguments @('shell', 'pm', 'path', $Package)
+        $observedPath = [regex]::Match($observedPathOutput, '(?m)^package:(\S+)$').Groups[1].Value
+        if (-not $observedPath) { throw "[$name] Unable to locate installed APK during final verification" }
+        $observedCopy = [System.IO.Path]::GetTempFileName()
+        try {
+            Invoke-Adb -Serial $serial -Arguments @('pull', $observedPath, $observedCopy) | Out-Null
+            $observedFacts = Get-ApkFacts -Path $observedCopy
+            $observedApkHash = (Get-FileHash -LiteralPath $observedCopy -Algorithm SHA256).Hash.ToLowerInvariant()
+            Assert-ObservedInstalledArtifact -ExpectedSha256 $approvedApkHash -ObservedSha256 $observedApkHash
+            if ($observedFacts.applicationId -ne $approvedFacts.applicationId -or
+                $observedFacts.versionCode -ne $approvedFacts.versionCode -or
+                $observedFacts.versionName -ne $approvedFacts.versionName -or
+                $observedFacts.signerSha256 -ne $approvedFacts.signerSha256) {
+                throw "[$name] Installed APK hash or identity does not match the approved artifact"
+            }
+        } finally {
+            Remove-Item -LiteralPath $observedCopy -Force -ErrorAction SilentlyContinue
+        }
+    }
     $resumed = Invoke-Adb -Serial $serial -Arguments @('shell', 'dumpsys', 'activity', 'activities')
     if ($resumed -notmatch "mResumedActivity.*$([regex]::Escape($Package))") {
         throw "[$name] ImmichFrame is not the resumed application"
@@ -339,14 +391,10 @@ foreach ($frame in $manifest.frames) {
         pid = $processId
         homeCorrect = $true
         resumed = $true
-        apkSha256 = if ($deployment) { $approvedApkHash } else { $null }
+        apkSha256 = $observedApkHash
         releaseId = if ($deployment) { $requiredApproval } else { $null }
     }
+    Write-ResultsJson
 }
 
 $results | Format-Table -AutoSize
-if ($OutputJsonPath) {
-    $parent = Split-Path -Parent $OutputJsonPath
-    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-    $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutputJsonPath -Encoding UTF8
-}

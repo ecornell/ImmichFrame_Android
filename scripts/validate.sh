@@ -19,8 +19,19 @@ fi
 
 cd "$repo_root"
 python3 -m unittest discover -s scripts/tests
+if command -v pwsh >/dev/null 2>&1 && pwsh -NoProfile -Command \
+    'if (Get-Module -ListAvailable Pester) { exit 0 } else { exit 1 }'; then
+  pwsh -NoProfile -Command "Invoke-Pester -Path '$repo_root/scripts/tests/deploy-frames.Tests.ps1' -CI"
+elif command -v powershell.exe >/dev/null 2>&1 && powershell.exe -NoProfile -Command \
+    'if (Get-Module -ListAvailable Pester) { exit 0 } else { exit 1 }'; then
+  pester_test="$(wslpath -w "$repo_root/scripts/tests/deploy-frames.Tests.ps1")"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+    "\$result=Invoke-Pester -Script '$pester_test' -PassThru; if(\$result.FailedCount -gt 0){exit 1}"
+else
+  echo 'SKIP: Pester deployment tests (pwsh/Pester unavailable)' >&2
+fi
 if (($#)); then
   exec bash gradlew "$@"
 else
-  exec bash gradlew testDebugUnitTest lintDebug assembleDebug
+  exec bash gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
 fi

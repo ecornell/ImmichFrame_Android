@@ -5,13 +5,15 @@
       "serial": "192.168.1.100:5555",
       "expectedModel": "WF1561",
       "expectedDeviceSerial": "WF1561_HARDWARE_SERIAL",
-      "scanSubnet": "192.168.1"
+      "scanSubnet": "192.168.1",
+      "health": { "panelPackage": "com.zeasn.frame", "requirePanelProcess": true }
     },
     {
       "name": "W10J",
       "serial": "10.10.0.100:5555",
       "expectedModel": "w10j05",
-      "expectedDeviceSerial": "W10J_HARDWARE_SERIAL"
+      "expectedDeviceSerial": "W10J_HARDWARE_SERIAL",
+      "health": { "panelPackage": "", "requirePanelProcess": false }
     }
   ]
 }
