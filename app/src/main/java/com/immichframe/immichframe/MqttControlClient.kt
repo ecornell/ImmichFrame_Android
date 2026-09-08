@@ -135,6 +135,10 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
+                // Discovery + availability + state is 18 QoS-1 messages. Paho's default of ten
+                // can drop the tail of that burst before acknowledgements arrive, especially
+                // when a retained Home Assistant birth triggers another snapshot at connect.
+                maxInflight = 64
                 maxReconnectDelay = 120_000
                 isHttpsHostnameVerificationEnabled = true
                 if (settings.username.isNotBlank()) userName = settings.username

@@ -343,19 +343,24 @@ object Helpers {
     }
 
     /**
-     * Returns the next time (after [now]) at which the schedule becomes active, or null if the
-     * schedule has no rules (always active) or no active period is found within the next week.
-     * Scans minute-by-minute up to 8 days ahead.
+     * Returns the next inactive-to-active transition after [now], or null if the schedule has no
+     * rules (always active) or no transition is found within the next eight days. Calendar-based
+     * minute steps intentionally follow local-time daylight-saving transitions.
      */
     fun nextActiveStart(schedule: ActiveSchedule, now: Calendar): Calendar? {
         if (schedule.rules.isEmpty()) return null
         val cursor = now.clone() as Calendar
-        cursor.set(Calendar.SECOND, 0)
-        cursor.set(Calendar.MILLISECOND, 0)
+        // Round the instant, not wall-clock fields: Calendar.set() can resolve an ambiguous
+        // autumn hour to its later occurrence and skip the transition in the repeated hour.
+        cursor.timeInMillis = now.timeInMillis - now.get(Calendar.SECOND) * 1_000L -
+            now.get(Calendar.MILLISECOND)
+        var wasActive = isActiveNow(schedule, cursor)
         cursor.add(Calendar.MINUTE, 1)
-        val maxSteps = 8 * 24 * 60
-        repeat(maxSteps) {
-            if (isActiveNow(schedule, cursor)) return cursor
+        val deadline = now.timeInMillis + 8L * 24 * 60 * 60 * 1_000
+        while (cursor.timeInMillis <= deadline) {
+            val active = isActiveNow(schedule, cursor)
+            if (!wasActive && active) return cursor
+            wasActive = active
             cursor.add(Calendar.MINUTE, 1)
         }
         return null

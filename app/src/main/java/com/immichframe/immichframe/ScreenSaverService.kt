@@ -26,6 +26,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.preference.PreferenceManager
+import androidx.core.view.doOnNextLayout
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,7 +59,6 @@ class ScreenSaverService : DreamService() {
     private lateinit var serverSettings: Helpers.ServerSettings
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
-    private var isWeatherTimerRunning = false
     private var useWebView = true
     private var frameBackground = FrameBackground.THUMBHASH
     private var frameScale = FrameScale.FIT
@@ -75,9 +76,13 @@ class ScreenSaverService : DreamService() {
     private var zoomFrameRate = 30
     private var showCurrentDate = true
     private var currentWeather = ""
-    private var isImageTimerRunning = false
     private var imageCall: Call<Helpers.ImageResponse>? = null
+    private var weatherCall: Call<Helpers.Weather>? = null
+    private var settingsCall: Call<Helpers.ServerSettings>? = null
+    private var settingsRetryRunnable: Runnable? = null
     private var imageJob: Job? = null
+    private val playbackSession = PlaybackSession()
+    private var nativeSessionToken = 0L
     @Volatile private var imageGeneration = 0L
     private val handler = Handler(Looper.getMainLooper())
     private var previousImage: Helpers.ImageResponse? = null
@@ -86,22 +91,14 @@ class ScreenSaverService : DreamService() {
     private var portraitCacheGeneration = -1L
     private val portraitCacheLock = Any()
     private lateinit var framePresenter: NativeFramePresenter
-    private val imageRunnable = object : Runnable {
-        override fun run() {
-            if (isImageTimerRunning) {
-                handler.postDelayed(this, (serverSettings.interval * 1000).toLong())
-                getNextImage()
-            }
-        }
-    }
-    private val weatherRunnable = object : Runnable {
-        override fun run() {
-            if (isWeatherTimerRunning) {
-                handler.postDelayed(this, 600000)
-                getWeather()
-            }
-        }
-    }
+    private val imageTimer = PlaybackTimer(
+        { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
+        { serverSettings.interval * 1_000L }, ::getNextImage,
+    )
+    private val weatherTimer = PlaybackTimer(
+        { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
+        { 600_000L }, ::getWeather,
+    )
     @SuppressLint("ClickableViewAccessibility")
     override fun onDreamingStarted() {
         super.onDreamingStarted()
@@ -126,9 +123,9 @@ class ScreenSaverService : DreamService() {
     override fun onDreamingStopped() {
         super.onDreamingStopped()
         if (::framePresenter.isInitialized) framePresenter.clear()
+        stopNativePlayback()
         webViewRetryScope?.cancel()
         webViewRetryScope = null
-        stopImageTimer()
         destroyWebView()
         releaseWakeLock()
         handler.removeCallbacksAndMessages(null)
@@ -186,17 +183,29 @@ class ScreenSaverService : DreamService() {
     private fun showImage(
         imageResponse: Helpers.ImageResponse,
         persist: Boolean = true,
+        allowPortraitPair: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
         val scope = webViewRetryScope ?: return
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token)) return
         val generation = ++imageGeneration
         imageJob?.cancel()
+        imageJob = null
+        val width = window.decorView.width
+        val height = window.decorView.height
+        if (width <= 1 || height <= 1) {
+            window.decorView.doOnNextLayout {
+                if (generation == imageGeneration && playbackSession.isCurrent(token)) {
+                    showImage(imageResponse, persist, allowPortraitPair, afterPresented)
+                }
+            }
+            return
+        }
         imageJob = scope.launch(Dispatchers.IO) {
             var rendered: RenderedFrame? = null
             var handedOff = false
             try {
-                val width = window.decorView.width.coerceAtLeast(1)
-                val height = window.decorView.height.coerceAtLeast(1)
                 val prepared = Helpers.prepareImage(imageResponse)
                 if (generation != imageGeneration) return@launch
                 val isPortrait = prepared.height > prepared.width
@@ -205,7 +214,9 @@ class ScreenSaverService : DreamService() {
                 var waitingForPair = false
                 synchronized(portraitCacheLock) {
                     if (generation != imageGeneration) return@launch
-                    if (isPortrait && serverSettings.layout == "splitview") {
+                    if (PlaybackPolicies.shouldWaitForPortraitPair(
+                            isPortrait, serverSettings.layout, allowPortraitPair,
+                        )) {
                         val cached = portraitCache
                         if (cached != null && portraitCacheGeneration == generation - 1L) {
                             first = cached
@@ -234,14 +245,23 @@ class ScreenSaverService : DreamService() {
                     edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
                 )
                 withContext(Dispatchers.Main) {
-                    if (generation == imageGeneration) {
+                    if (generation == imageGeneration && playbackSession.isCurrent(token)) {
                         updateUI(rendered)
                         handedOff = true
                         afterPresented?.invoke()
                     }
                 }
-                if (persist && generation == imageGeneration) {
+                if (persist && handedOff && generation == imageGeneration) {
                     CachedImageStore.writeIfStale(applicationContext, prepared)
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                withContext(Dispatchers.Main) {
+                    if (generation == imageGeneration && playbackSession.isCurrent(token)) {
+                        Log.e("NativeFrame", "Unable to render dream image; retaining the current frame", error)
+                        setOfflineIndicator(true)
+                        scheduleImageRetry()
+                    }
                 }
             } finally {
                 if (!handedOff) rendered?.bitmap?.takeUnless { it.isRecycled }?.recycle()
@@ -328,7 +348,10 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun getNextImage() {
-        if (imageCall?.isExecuted == true || imageJob?.isActive == true || !::apiService.isInitialized) return
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token) || imageCall?.isExecuted == true ||
+            imageJob?.isActive == true || !::apiService.isInitialized
+        ) return
         val call = apiService.getImageData()
         imageCall = call
         call.enqueue(object : Callback<Helpers.ImageResponse> {
@@ -336,17 +359,25 @@ class ScreenSaverService : DreamService() {
                 call: Call<Helpers.ImageResponse>,
                 response: Response<Helpers.ImageResponse>
             ) {
+                if (imageCall !== call || !playbackSession.isCurrent(token)) return
                 imageCall = null
                 if (response.isSuccessful) {
                     val imageResponse = response.body()
                     if (imageResponse != null) {
-                        setOfflineIndicator(false)
-                        previousImage = currentImage
-                        currentImage = imageResponse
-                        showImage(imageResponse)
+                        showImage(imageResponse, afterPresented = {
+                            if (playbackSession.isCurrent(token)) {
+                                setOfflineIndicator(false)
+                                previousImage = currentImage
+                                currentImage = imageResponse
+                            }
+                        })
+                    } else {
+                        setOfflineIndicator(true)
+                        scheduleImageRetry()
                     }
                 } else {
                     setOfflineIndicator(true)
+                    scheduleImageRetry()
                     Toast.makeText(
                         applicationContext,
                         "Failed to load image (HTTP ${response.code()})",
@@ -356,17 +387,22 @@ class ScreenSaverService : DreamService() {
             }
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
+                if (imageCall !== call || !playbackSession.isCurrent(token)) return
                 imageCall = null
-                if (!call.isCanceled) setOfflineIndicator(true)
+                if (!call.isCanceled) {
+                    setOfflineIndicator(true)
+                    scheduleImageRetry()
+                }
             }
         })
     }
 
+    private fun scheduleImageRetry() {
+        imageTimer.retryAfter(5_000L)
+    }
+
     private fun startImageTimer() {
-        if (!isImageTimerRunning) {
-            isImageTimerRunning = true
-            handler.postDelayed(imageRunnable, (serverSettings.interval * 1000).toLong())
-        }
+        imageTimer.start()
     }
 
     private fun setOfflineIndicator(offline: Boolean) {
@@ -387,21 +423,33 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun stopImageTimer() {
-        isImageTimerRunning = false
+        imageTimer.stop()
+        ++imageGeneration
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
-        handler.removeCallbacks(imageRunnable)
         imageCall?.cancel()
         imageCall = null
         imageJob?.cancel()
         imageJob = null
     }
 
+    private fun stopWeatherTimer() {
+        weatherTimer.stop()
+        weatherCall?.cancel()
+        weatherCall = null
+    }
+
     private fun getWeather() {
-        apiService.getWeather().enqueue(object : Callback<Helpers.Weather> {
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token) || !::apiService.isInitialized || weatherCall != null) return
+        val request = apiService.getWeather()
+        weatherCall = request
+        request.enqueue(object : Callback<Helpers.Weather> {
             override fun onResponse(
                 call: Call<Helpers.Weather>,
                 response: Response<Helpers.Weather>
             ) {
+                if (weatherCall !== call || !playbackSession.isCurrent(token)) return
+                weatherCall = null
                 if (response.isSuccessful) {
                     val weatherResponse = response.body()
                     if (weatherResponse != null) {
@@ -412,7 +460,9 @@ class ScreenSaverService : DreamService() {
             }
 
             override fun onFailure(call: Call<Helpers.Weather>, t: Throwable) {
-                Log.e("Weather", "Failed to fetch weather: ${t.message}")
+                if (weatherCall !== call || !playbackSession.isCurrent(token)) return
+                weatherCall = null
+                if (!call.isCanceled) Log.e("Weather", "Failed to fetch weather: ${t.message}")
             }
         })
     }
@@ -421,16 +471,22 @@ class ScreenSaverService : DreamService() {
         onSuccess: (Helpers.ServerSettings) -> Unit,
         onFailure: (Throwable) -> Unit,
         maxRetries: Int = Int.MAX_VALUE,
-        retryDelayMillis: Long = 5000
+        retryDelayMillis: Long = 5000,
+        token: Long = nativeSessionToken,
     ) {
         var retryCount = 0
 
         fun attemptFetch() {
-            apiService.getServerSettings().enqueue(object : Callback<Helpers.ServerSettings> {
+            if (!playbackSession.isCurrent(token)) return
+            val request = apiService.getServerSettings()
+            settingsCall = request
+            request.enqueue(object : Callback<Helpers.ServerSettings> {
                 override fun onResponse(
                     call: Call<Helpers.ServerSettings>,
                     response: Response<Helpers.ServerSettings>
                 ) {
+                    if (settingsCall !== call || !playbackSession.isCurrent(token)) return
+                    settingsCall = null
                     if (response.isSuccessful) {
                         val serverSettingsResponse = response.body()
                         if (serverSettingsResponse != null) {
@@ -444,15 +500,19 @@ class ScreenSaverService : DreamService() {
                 }
 
                 override fun onFailure(call: Call<Helpers.ServerSettings>, t: Throwable) {
-                    handleFailure(t)
+                    if (settingsCall !== call || !playbackSession.isCurrent(token)) return
+                    settingsCall = null
+                    if (!call.isCanceled) handleFailure(t)
                 }
 
                 private fun handleFailure(t: Throwable) {
+                    if (!playbackSession.isCurrent(token)) return
                     if (retryCount < maxRetries) {
                         retryCount++
-                        handler.postDelayed({
-                            attemptFetch()
-                        }, retryDelayMillis)
+                        Runnable { attemptFetch() }.also {
+                            settingsRetryRunnable = it
+                            handler.postDelayed(it, retryDelayMillis)
+                        }
                     } else {
                         onFailure(t)
                     }
@@ -484,6 +544,7 @@ class ScreenSaverService : DreamService() {
         backgroundDarkness = prefs.getInt("backgroundDarkness", 84).coerceIn(0, 200)
         zoomFrameRate = prefs.getInt("zoomFrameRate", 30).coerceIn(10, 60)
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
+        stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
         val authSecret = prefs.getString("authSecret", "") ?: ""
@@ -496,8 +557,6 @@ class ScreenSaverService : DreamService() {
 
         if (useWebView) {
             val activeWebView = ensureWebView()
-            handler.removeCallbacks(imageRunnable)
-            handler.removeCallbacks(weatherRunnable)
             activeWebView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
@@ -539,11 +598,18 @@ class ScreenSaverService : DreamService() {
             activeWebView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
+            nativeSessionToken = playbackSession.activate()
             destroyWebView()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
+            CachedServerSettingsStore.read(applicationContext)?.let { cachedSettings ->
+                serverSettings = cachedSettings
+                setOfflineIndicator(true)
+                onSettingsLoaded()
+            }
             getServerSettings(
                 onSuccess = { settings ->
+                    CachedServerSettingsStore.write(applicationContext, settings)
                     serverSettings = settings
                     onSettingsLoaded()
                 },
@@ -553,8 +619,23 @@ class ScreenSaverService : DreamService() {
                         "Failed to load server settings: ${error.localizedMessage}",
                         Toast.LENGTH_SHORT
                     ).show()
-                }
+                },
+                token = nativeSessionToken,
             )
+        }
+    }
+
+    private fun stopNativePlayback() {
+        playbackSession.invalidate()
+        stopImageTimer()
+        stopWeatherTimer()
+        settingsCall?.cancel()
+        settingsCall = null
+        settingsRetryRunnable?.let(handler::removeCallbacks)
+        settingsRetryRunnable = null
+        synchronized(portraitCacheLock) {
+            portraitCache = null
+            portraitCacheGeneration = -1L
         }
     }
 
@@ -601,29 +682,32 @@ class ScreenSaverService : DreamService() {
             txtDateTime.visibility = View.GONE
         }
 
-        val cachedImage = if (currentImage == null) CachedImageStore.read(applicationContext) else null
+        val cachedImage = currentImage ?: CachedImageStore.read(applicationContext)
         if (cachedImage != null) {
-            cachedImage.let {
-                currentImage = it
-                showImage(it, persist = false, afterPresented = ::getNextImage)
-            }
+            val token = nativeSessionToken
+            showImage(
+                cachedImage,
+                persist = false,
+                allowPortraitPair = false,
+                afterPresented = {
+                    currentImage = cachedImage
+                    val generation = imageGeneration
+                    imageJob?.invokeOnCompletion { error ->
+                        if (error == null) handler.post {
+                            if (generation == imageGeneration && playbackSession.isCurrent(token)) getNextImage()
+                        }
+                    }
+                },
+            )
         } else {
             getNextImage()
         }
         startImageTimer()
 
         if (serverSettings.showWeatherDescription) {
-            getWeather()
-            if (!isWeatherTimerRunning) {
-                isWeatherTimerRunning = true
-                handler.postDelayed(object : Runnable {
-                    override fun run() {
-                        getWeather()
-                        handler.postDelayed(this, 600000)
-                    }
-                }, (300000))
-            }
-
+            weatherTimer.start(0L)
+        } else {
+            stopWeatherTimer()
         }
     }
 

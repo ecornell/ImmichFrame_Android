@@ -54,6 +54,7 @@ import kotlinx.coroutines.*
 import androidx.lifecycle.lifecycleScope
 import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
+import androidx.core.view.doOnNextLayout
 
 class MainActivity : AppCompatActivity() {
     private var webView: WebView? = null
@@ -107,10 +108,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private var imageCall: Call<Helpers.ImageResponse>? = null
+    private var weatherCall: Call<Helpers.Weather>? = null
+    private var settingsCall: Call<Helpers.ServerSettings>? = null
+    private var settingsRetryRunnable: Runnable? = null
     private var imageJob: Job? = null
+    private val playbackSession = PlaybackSession()
+    private var nativeSessionToken = 0L
     @Volatile private var imageGeneration = 0L
     private var imageRetryMillis = 5_000L
-    private var isWeatherTimerRunning = false
     private var useWebView = true
     private var frameBackground = FrameBackground.THUMBHASH
     private var frameScale = FrameScale.FIT
@@ -128,7 +133,7 @@ class MainActivity : AppCompatActivity() {
     private val burnInController = OverlayBurnInController()
     private var showCurrentDate = true
     private var currentWeather = ""
-    private var isImageTimerRunning = false
+    private val isImageTimerRunning get() = imageTimer.isRunning
     private val handler = Handler(Looper.getMainLooper())
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
@@ -136,22 +141,14 @@ class MainActivity : AppCompatActivity() {
     private var portraitCacheGeneration = -1L
     private val portraitCacheLock = Any()
     private lateinit var framePresenter: NativeFramePresenter
-    private val imageRunnable = object : Runnable {
-        override fun run() {
-            if (isImageTimerRunning) {
-                handler.postDelayed(this, (serverSettings.interval * 1000).toLong())
-                getNextImage()
-            }
-        }
-    }
-    private val weatherRunnable = object : Runnable {
-        override fun run() {
-            if (isWeatherTimerRunning) {
-                handler.postDelayed(this, 600000)
-                getWeather()
-            }
-        }
-    }
+    private val imageTimer = PlaybackTimer(
+        { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
+        { serverSettings.interval * 1_000L }, ::getNextImage,
+    )
+    private val weatherTimer = PlaybackTimer(
+        { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
+        { 600_000L }, ::getWeather,
+    )
     private val activeCheckRunnable = object : Runnable {
         override fun run() {
             checkActiveTime()
@@ -287,14 +284,25 @@ class MainActivity : AppCompatActivity() {
         allowPortraitPair: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token)) return
         val generation = ++imageGeneration
         imageJob?.cancel()
+        imageJob = null
+        val width = window.decorView.width
+        val height = window.decorView.height
+        if (width <= 1 || height <= 1) {
+            window.decorView.doOnNextLayout {
+                if (generation == imageGeneration && playbackSession.isCurrent(token)) {
+                    showImage(imageResponse, persist, allowPortraitPair, afterPresented)
+                }
+            }
+            return
+        }
         imageJob = lifecycleScope.launch(Dispatchers.IO) {
             var rendered: RenderedFrame? = null
             var handedOff = false
             try {
-                val width = window.decorView.width.coerceAtLeast(1)
-                val height = window.decorView.height.coerceAtLeast(1)
                 val prepared = Helpers.prepareImage(imageResponse)
                 if (generation != imageGeneration) return@launch
                 val isPortrait = prepared.height > prepared.width
@@ -303,7 +311,9 @@ class MainActivity : AppCompatActivity() {
                 var waitingForPair = false
                 synchronized(portraitCacheLock) {
                     if (generation != imageGeneration) return@launch
-                    if (allowPortraitPair && isPortrait && serverSettings.layout == "splitview") {
+                    if (PlaybackPolicies.shouldWaitForPortraitPair(
+                            isPortrait, serverSettings.layout, allowPortraitPair,
+                        )) {
                         val cached = portraitCache
                         if (cached != null && portraitCacheGeneration == generation - 1L) {
                             first = cached
@@ -332,14 +342,25 @@ class MainActivity : AppCompatActivity() {
                     edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
                 )
                 withContext(Dispatchers.Main) {
-                    if (generation == imageGeneration && !isFinishing && !isDestroyed) {
+                    if (generation == imageGeneration && playbackSession.isCurrent(token) &&
+                        !isFinishing && !isDestroyed
+                    ) {
                         updateUI(rendered)
                         handedOff = true
                         afterPresented?.invoke()
                     }
                 }
-                if (persist && generation == imageGeneration) {
+                if (persist && handedOff && generation == imageGeneration) {
                     CachedImageStore.writeIfStale(applicationContext, prepared)
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                withContext(Dispatchers.Main) {
+                    if (generation == imageGeneration && playbackSession.isCurrent(token)) {
+                        Log.e("NativeFrame", "Unable to render image; retaining the current frame", error)
+                        setOfflineIndicator(true)
+                        scheduleImageRetry()
+                    }
                 }
             } finally {
                 if (!handedOff) rendered?.bitmap?.takeUnless { it.isRecycled }?.recycle()
@@ -420,8 +441,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getNextImage() {
-        if (imageCall?.isExecuted == true || imageJob?.isActive == true ||
-            !::apiService.isInitialized || isFrameInactive == true
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token) || imageCall?.isExecuted == true ||
+            imageJob?.isActive == true || !::apiService.isInitialized || isFrameInactive == true
         ) return
         val call = apiService.getImageData()
         imageCall = call
@@ -430,15 +452,22 @@ class MainActivity : AppCompatActivity() {
                 call: Call<Helpers.ImageResponse>,
                 response: Response<Helpers.ImageResponse>
             ) {
+                if (imageCall !== call || !playbackSession.isCurrent(token)) return
                 imageCall = null
                 if (response.isSuccessful) {
                     val imageResponse = response.body()
                     if (imageResponse != null) {
-                        setOfflineIndicator(false)
-                        previousImage = currentImage
-                        currentImage = imageResponse
-                        imageRetryMillis = 5_000L
-                        showImage(imageResponse)
+                        showImage(imageResponse, afterPresented = {
+                            if (playbackSession.isCurrent(token)) {
+                                setOfflineIndicator(false)
+                                previousImage = currentImage
+                                currentImage = imageResponse
+                                imageRetryMillis = 5_000L
+                            }
+                        })
+                    } else {
+                        setOfflineIndicator(true)
+                        scheduleImageRetry()
                     }
                 } else {
                     setOfflineIndicator(true)
@@ -447,6 +476,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
+                if (imageCall !== call || !playbackSession.isCurrent(token)) return
                 imageCall = null
                 if (!call.isCanceled) {
                     setOfflineIndicator(true)
@@ -458,8 +488,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun scheduleImageRetry() {
         if (!isImageTimerRunning || isFrameInactive == true) return
-        handler.removeCallbacks(imageRunnable)
-        handler.postDelayed(imageRunnable, imageRetryMillis)
+        imageTimer.retryAfter(imageRetryMillis)
         imageRetryMillis = (imageRetryMillis * 2).coerceAtMost(5 * 60_000L)
     }
 
@@ -488,16 +517,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startImageTimer() {
-        if (!isImageTimerRunning) {
-            isImageTimerRunning = true
-            handler.postDelayed(imageRunnable, (serverSettings.interval * 1000).toLong())
-        }
+        imageTimer.start()
     }
 
     private fun stopImageTimer() {
-        isImageTimerRunning = false
+        imageTimer.stop()
+        ++imageGeneration
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
-        handler.removeCallbacks(imageRunnable)
         imageCall?.cancel()
         imageCall = null
         imageJob?.cancel()
@@ -505,24 +531,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startWeatherTimer() {
-        if (!isWeatherTimerRunning) {
-            isWeatherTimerRunning = true
-            handler.post(weatherRunnable)
-        }
+        weatherTimer.start(0L)
     }
 
     private fun stopWeatherTimer() {
-        isWeatherTimerRunning = false
-        handler.removeCallbacks(weatherRunnable)
+        weatherTimer.stop()
+        weatherCall?.cancel()
+        weatherCall = null
     }
 
     private fun getWeather() {
-        if (isFrameInactive == true || !::apiService.isInitialized) return
-        apiService.getWeather().enqueue(object : Callback<Helpers.Weather> {
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token) || isFrameInactive == true ||
+            !::apiService.isInitialized || weatherCall != null
+        ) return
+        val request = apiService.getWeather()
+        weatherCall = request
+        request.enqueue(object : Callback<Helpers.Weather> {
             override fun onResponse(
                 call: Call<Helpers.Weather>,
                 response: Response<Helpers.Weather>
             ) {
+                if (weatherCall !== call || !playbackSession.isCurrent(token)) return
+                weatherCall = null
                 if (isFrameInactive != true && response.isSuccessful) {
                     val weatherResponse = response.body()
                     if (weatherResponse != null) {
@@ -534,7 +565,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFailure(call: Call<Helpers.Weather>, t: Throwable) {
-                Log.e("Weather", "Failed to fetch weather: ${t.message}")
+                if (weatherCall !== call || !playbackSession.isCurrent(token)) return
+                weatherCall = null
+                if (!call.isCanceled) Log.e("Weather", "Failed to fetch weather: ${t.message}")
             }
         })
     }
@@ -543,19 +576,22 @@ class MainActivity : AppCompatActivity() {
         onSuccess: (Helpers.ServerSettings) -> Unit,
         onFailure: (Throwable) -> Unit,
         maxRetries: Int = Int.MAX_VALUE,
-        retryDelayMillis: Long = 5000
+        retryDelayMillis: Long = 5000,
+        token: Long = nativeSessionToken,
     ) {
         var retryCount = 0
 
         fun attemptFetch() {
-            if (useWebView || isFrameInactive == true) {
-                return
-            }
-            apiService.getServerSettings().enqueue(object : Callback<Helpers.ServerSettings> {
+            if (!playbackSession.isCurrent(token) || useWebView || isFrameInactive == true) return
+            val request = apiService.getServerSettings()
+            settingsCall = request
+            request.enqueue(object : Callback<Helpers.ServerSettings> {
                 override fun onResponse(
                     call: Call<Helpers.ServerSettings>,
                     response: Response<Helpers.ServerSettings>
                 ) {
+                    if (settingsCall !== call || !playbackSession.isCurrent(token)) return
+                    settingsCall = null
                     if (response.isSuccessful) {
                         val serverSettingsResponse = response.body()
                         if (serverSettingsResponse != null) {
@@ -569,18 +605,19 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onFailure(call: Call<Helpers.ServerSettings>, t: Throwable) {
-                    handleFailure(t)
+                    if (settingsCall !== call || !playbackSession.isCurrent(token)) return
+                    settingsCall = null
+                    if (!call.isCanceled) handleFailure(t)
                 }
 
                 private fun handleFailure(t: Throwable) {
-                    if (useWebView || isFrameInactive == true) {
-                        return
-                    }
+                    if (!playbackSession.isCurrent(token) || useWebView || isFrameInactive == true) return
                     if (retryCount < maxRetries) {
                         retryCount++
-                        handler.postDelayed({
-                            attemptFetch()
-                        }, retryDelayMillis)
+                        Runnable { attemptFetch() }.also {
+                            settingsRetryRunnable = it
+                            handler.postDelayed(it, retryDelayMillis)
+                        }
                     } else {
                         onFailure(t)
                     }
@@ -612,6 +649,7 @@ class MainActivity : AppCompatActivity() {
         backgroundDarkness = prefs.getInt("backgroundDarkness", 84).coerceIn(0, 200)
         zoomFrameRate = prefs.getInt("zoomFrameRate", 30).coerceIn(10, 60)
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
+        stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
         val authSecret = prefs.getString("authSecret", "") ?: ""
@@ -646,8 +684,6 @@ class MainActivity : AppCompatActivity() {
         }
         if (useWebView) {
             val activeWebView = ensureWebView()
-            handler.removeCallbacks(imageRunnable)
-            handler.removeCallbacks(weatherRunnable)
 
             activeWebView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -703,6 +739,7 @@ class MainActivity : AppCompatActivity() {
             activeWebView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
+            nativeSessionToken = playbackSession.activate()
             destroyWebView()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
@@ -710,7 +747,7 @@ class MainActivity : AppCompatActivity() {
             // Render the last successful image immediately at cold start. The image cache needs
             // its matching server presentation settings, so retain both independently of the
             // live request and refresh them in the background when the server returns.
-            if (isFrameInactive != true && currentImage == null) {
+            if (isFrameInactive != true) {
                 CachedServerSettingsStore.read(applicationContext)?.let { cachedSettings ->
                     serverSettings = cachedSettings
                     setOfflineIndicator(true)
@@ -731,8 +768,23 @@ class MainActivity : AppCompatActivity() {
                         "Failed to load server settings: ${error.localizedMessage}",
                         Toast.LENGTH_SHORT
                     ).show()
-                }
+                },
+                token = nativeSessionToken,
             )
+        }
+    }
+
+    private fun stopNativePlayback() {
+        playbackSession.invalidate()
+        stopImageTimer()
+        stopWeatherTimer()
+        settingsCall?.cancel()
+        settingsCall = null
+        settingsRetryRunnable?.let(handler::removeCallbacks)
+        settingsRetryRunnable = null
+        synchronized(portraitCacheLock) {
+            portraitCache = null
+            portraitCacheGeneration = -1L
         }
     }
 
@@ -779,28 +831,27 @@ class MainActivity : AppCompatActivity() {
             txtDateTime.visibility = View.GONE
         }
 
-        val cachedImage = if (currentImage == null) CachedImageStore.read(applicationContext) else null
+        val cachedImage = currentImage ?: CachedImageStore.read(applicationContext)
         if (cachedImage != null) {
-            val presentCachedImage = {
-                if (currentImage == null && isFrameInactive != true) {
+            val token = nativeSessionToken
+            // A lone cached portrait must be usable with no backend available. showImage also
+            // waits for layout, and only a successfully presented frame becomes currentImage.
+            showImage(
+                cachedImage,
+                persist = false,
+                allowPortraitPair = false,
+                afterPresented = {
                     currentImage = cachedImage
-                    // The offline cache contains one last-known image. Never wait for a second
-                    // portrait from an unavailable server; render the cached portrait full-frame.
-                    showImage(
-                        cachedImage,
-                        persist = false,
-                        allowPortraitPair = false,
-                        afterPresented = ::getNextImage,
-                    )
-                }
-            }
-            // A cold process start can reach this point before the decor view has dimensions.
-            // Rendering a 1x1 frame produces only a sampled background color on screen.
-            if (window.decorView.width > 1 && window.decorView.height > 1) {
-                presentCachedImage()
-            } else {
-                window.decorView.post(presentCachedImage)
-            }
+                    remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
+                    val generation = imageGeneration
+                    // getNextImage rejects an active imageJob, so wait for the render to finish.
+                    imageJob?.invokeOnCompletion { error ->
+                        if (error == null) handler.post {
+                            if (generation == imageGeneration && playbackSession.isCurrent(token)) getNextImage()
+                        }
+                    }
+                },
+            )
         } else {
             getNextImage()
         }
@@ -810,6 +861,8 @@ class MainActivity : AppCompatActivity() {
 
         if (serverSettings.showWeatherDescription) {
             startWeatherTimer()
+        } else {
+            stopWeatherTimer()
         }
     }
 
@@ -866,7 +919,7 @@ class MainActivity : AppCompatActivity() {
             .getBoolean("settingsLock", false)
         if (locked && !authorizedOverride) return
         val intent = Intent(this, SettingsActivity::class.java)
-        stopImageTimer()
+        stopNativePlayback()
         settingsLauncher.launch(intent)
     }
 
@@ -998,9 +1051,8 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             isFrameInactive = true
-            // Stop refreshing content while inactive
-            stopImageTimer()
-            stopWeatherTimer()
+            // Stop refreshing content and invalidate in-flight native callbacks while inactive.
+            stopNativePlayback()
             if (useWebView) {
                 webView?.loadUrl("about:blank")
             }
@@ -1176,8 +1228,7 @@ class MainActivity : AppCompatActivity() {
         rpcServer = null
         mqttClient?.stop()
         mqttClient = null
-        imageCall?.cancel()
-        imageJob?.cancel()
+        stopNativePlayback()
         unregisterReceiver(screenStateReceiver)
         handler.removeCallbacksAndMessages(null)
     }
@@ -1189,10 +1240,12 @@ class MainActivity : AppCompatActivity() {
         headers: Map<String, String> = emptyMap(),
     ) {
         lifecycleScope.launch {
+            if (!useWebView) return@launch
             val reachable = withContext(Dispatchers.IO) {
                 Helpers.isServerReachable(url)
             }
 
+            if (!useWebView) return@launch
             if (reachable) {
                 webView?.loadUrl(url, headers)
             } else if (attempt <= maxAttempts) {

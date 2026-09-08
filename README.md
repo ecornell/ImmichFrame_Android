@@ -27,6 +27,8 @@ You can find the documentation [here](https://immichframe.dev).
   ```
 
 The same validation is available as `scripts/validate.sh`. See
+[`docs/VALIDATION.md`](docs/VALIDATION.md) for release/R8 checks, network integration tests, and
+the playback regression checklist, and
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the multi-frame deployment and verification runbook.
 
 ## Dedicated frames and WF1561

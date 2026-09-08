@@ -1,0 +1,64 @@
+# Development validation
+
+Run the host checks, unit/integration tests, Android lint, and all validation APK builds with:
+
+```bash
+bash scripts/validate.sh testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease
+```
+
+The script selects the local JDK/SDK defaults documented in the README. It also runs Python
+operational tests and Pester deployment tests when PowerShell/Pester is available. Deployment
+tests use fake ADB; this command does not install APKs or contact deployed frames.
+
+The Gitea workflow builds the same Android variants. Without `signing.properties`, `assembleRelease`
+produces `app/build/outputs/apk/release/app-release-unsigned.apk`, exercising R8 without production
+credentials. An unsigned APK is a **validation artifact**, not an installable deployment release.
+An explicitly configured signing file retains the existing signed-release behavior. These builds
+do not establish release provenance or physical-device qualification; use the guarded deployment
+runbook for those steps.
+
+## Automated coverage
+
+- `PlaybackSessionTest`: invalidation rejects callbacks from obsolete native sessions; cached
+  portraits bypass split pairing, while live portraits still pair.
+- `PlaybackTimerTest`: stop/restart across mode changes, idempotent startup, immediate weather
+  ticks, retry replacement, and no rescheduling while stopped. Activity and DreamService share
+  this timer implementation so running flags cannot drift from callback removal.
+- `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
+  adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
+- `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies
+  authentication, state JSON, mutation dispatch, invalid JSON, and oversized-body rejection.
+- `MqttControlClientIntegrationTest`: the real Paho client connects to a bounded loopback-only
+  MQTT test peer, publishes retained discovery/state, handles commands, resynchronizes after a
+  retained Home Assistant birth, and publishes offline availability on stop. No broker service,
+  credentials, extra dependencies, or external network are required. The test peer implements
+  only the MQTT subset used here; TLS, broker restart/reconnect, and will delivery need broader
+  broker/device qualification. Retained command filtering also has a separate policy unit test.
+
+JUnit results are under `app/build/reports/tests/testDebugUnitTest/`; lint reports are under
+`app/build/reports/`. Building `assembleDebugAndroidTest` compiles instrumentation tests; it does
+**not** execute them.
+
+## Playback device/emulator regression checklist
+
+Run on an explicitly selected test device/emulator, not an operational frame. Use an API 27
+target and a modern Android target. Do not run unqualified builds against production frames.
+
+1. Seed a successful image/settings cache, stop the process, and disable the backend. Start native
+   activity and screensaver separately: both should show a full-sized last-known image. Repeat
+   with one cached portrait and split-view settings; it must not wait for a second portrait.
+2. Restore the backend: fresh images should replace the cache, weather should resume, and the
+   offline indicator should clear only after a valid live image is presented.
+3. On an emulator with a working WebView, switch native → WebView → native repeatedly. Both image
+   and weather timers must restart once, with no duplicate callbacks. Also test schedule sleep/wake
+   and repeated dream start/stop while settings/weather/image requests are delayed.
+4. Serve a successful HTTP response with invalid Base64 or undecodable image bytes. The last good
+   frame should remain visible; automatic playback should retry without an uncaught exception.
+   Resume valid payloads and verify recovery. Pause or change modes during decode/retry and confirm
+   stale work cannot present a frame, fetch a paired image, or restart a stopped timer.
+5. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+   Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
+
+TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this
+change. Shared session/timer/pairing policy is extracted; Android UI, bitmap ownership, and the two
+presentation surfaces remain separate.

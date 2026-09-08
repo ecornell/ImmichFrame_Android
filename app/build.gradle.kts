@@ -31,8 +31,8 @@ android {
         applicationId = "com.immichframe.immichframe"
         minSdk = 23
         targetSdk = 36
-        versionCode = 55
-        versionName = "1.0.55.0"
+        versionCode = 56
+        versionName = "1.0.56.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "ImmichFrame"
         manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
@@ -51,7 +51,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("Release")
+            // CI intentionally produces an unsigned release artifact; production credentials are
+            // only used by explicitly configured local/release environments.
+            signingConfig = if (rootProject.file("signing.properties").exists()) {
+                signingConfigs.getByName("Release")
+            } else {
+                null
+            }
         }
     }
     compileOptions {

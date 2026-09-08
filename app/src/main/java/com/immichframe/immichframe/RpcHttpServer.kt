@@ -8,7 +8,9 @@ class RpcHttpServer(
     private val expectedToken: () -> String,
     private val state: RemoteStateStore,
     private val commands: RemoteCommands,
-) : NanoHTTPD(PORT) {
+    hostname: String? = null,
+    port: Int = PORT,
+) : NanoHTTPD(hostname, port) {
     private val router = RemoteApiRouter(state, commands)
     private val rateLimiters = ClientRateLimiters()
     private val failedAuthRateLimiters = ClientRateLimiters(limit = 30)

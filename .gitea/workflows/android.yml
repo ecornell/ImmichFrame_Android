@@ -37,12 +37,15 @@ jobs:
           bash gradlew --no-daemon --max-workers=1
           -Dorg.gradle.jvmargs="-Xmx1024m -Dfile.encoding=UTF-8"
           -Pkotlin.compiler.execution.strategy=in-process
-          testDebugUnitTest lintDebug assembleDebug
+          testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease
       - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: android-debug-validation
+          name: android-validation
           path: |
             app/build/reports/lint-results-debug.*
             app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-release.*
             app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
