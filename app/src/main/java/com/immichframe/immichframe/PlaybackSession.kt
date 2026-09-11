@@ -52,7 +52,59 @@ internal class PlaybackTimer(
         removeCallbacks(callback)
         postDelayed(callback, delayMillis)
     }
+
+    /** Applies a changed interval from now without accidentally resuming paused playback. */
+    fun reschedule() {
+        if (!isRunning) return
+        removeCallbacks(callback)
+        postDelayed(callback, intervalMillis())
+    }
 }
+
+/** Runs one asynchronous refresh at a time and schedules the next after that refresh completes. */
+internal class AsyncRefreshTimer(
+    private val postDelayed: (Runnable, Long) -> Unit,
+    private val removeCallbacks: (Runnable) -> Unit,
+    private val intervalMillis: Long,
+    private val refresh: (onComplete: () -> Unit) -> Unit,
+) {
+    private var generation = 0L
+    private var isRunning = false
+    private var pending: Runnable? = null
+
+    fun start() {
+        if (isRunning) return
+        isRunning = true
+        val token = ++generation
+        schedule(token)
+    }
+
+    fun stop() {
+        isRunning = false
+        generation++
+        pending?.let(removeCallbacks)
+        pending = null
+    }
+
+    private fun schedule(token: Long) {
+        if (!isRunning || token != generation) return
+        val task = Runnable {
+            if (!isRunning || token != generation) return@Runnable
+            pending = null
+            var completed = false
+            refresh {
+                if (!completed) {
+                    completed = true
+                    schedule(token)
+                }
+            }
+        }
+        pending = task
+        postDelayed(task, intervalMillis)
+    }
+}
+
+internal const val SERVER_SETTINGS_REFRESH_MILLIS = 30_000L
 
 internal object PlaybackPolicies {
     fun shouldWaitForPortraitPair(

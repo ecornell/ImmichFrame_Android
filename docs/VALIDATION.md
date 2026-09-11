@@ -22,8 +22,10 @@ runbook for those steps.
 - `PlaybackSessionTest`: invalidation rejects callbacks from obsolete native sessions; cached
   portraits bypass split pairing, while live portraits still pair.
 - `PlaybackTimerTest`: stop/restart across mode changes, idempotent startup, immediate weather
-  ticks, retry replacement, and no rescheduling while stopped. Activity and DreamService share
-  this timer implementation so running flags cannot drift from callback removal.
+  ticks, retry replacement, changed-interval rescheduling, and no rescheduling while stopped.
+  `AsyncRefreshTimerTest` verifies the shared 30-second server-settings cadence, single in-flight
+  refresh, lifecycle cancellation, and rejection of stale completions. Activity and DreamService
+  share these timer implementations so running flags cannot drift from callback removal.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies

@@ -59,6 +59,22 @@ class PlaybackTimerTest {
         assertEquals(1, ticks)
     }
 
+    @Test fun changedIntervalReschedulesRunningPlaybackFromNow() {
+        timer.start()
+        interval = 10_000L
+        timer.reschedule()
+        assertEquals(listOf(10_000L), pending.values.toList())
+    }
+
+    @Test fun changedIntervalDoesNotResumePausedPlayback() {
+        timer.start()
+        timer.stop()
+        interval = 10_000L
+        timer.reschedule()
+        assertFalse(timer.isRunning)
+        assertTrue(pending.isEmpty())
+    }
+
     private fun fire() {
         val task = pending.keys.single()
         pending.remove(task)

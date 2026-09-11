@@ -80,6 +80,7 @@ class ScreenSaverService : DreamService() {
     private var weatherCall: Call<Helpers.Weather>? = null
     private var settingsCall: Call<Helpers.ServerSettings>? = null
     private var settingsRetryRunnable: Runnable? = null
+    private var hasAppliedSettingsForSession = false
     private var imageJob: Job? = null
     private val playbackSession = PlaybackSession()
     private var nativeSessionToken = 0L
@@ -87,6 +88,8 @@ class ScreenSaverService : DreamService() {
     private val handler = Handler(Looper.getMainLooper())
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
+    private var lastFrameMetaLeft: FrameMeta? = null
+    private var lastFrameMetaRight: FrameMeta? = null
     private var portraitCache: Helpers.PreparedImage? = null
     private var portraitCacheGeneration = -1L
     private val portraitCacheLock = Any()
@@ -98,6 +101,10 @@ class ScreenSaverService : DreamService() {
     private val weatherTimer = PlaybackTimer(
         { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
         { 600_000L }, ::getWeather,
+    )
+    private val settingsRefreshTimer = AsyncRefreshTimer(
+        { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
+        SERVER_SETTINGS_REFRESH_MILLIS, ::refreshServerSettings,
     )
     @SuppressLint("ClickableViewAccessibility")
     override fun onDreamingStarted() {
@@ -277,6 +284,8 @@ class ScreenSaverService : DreamService() {
             zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
             zoomFramesPerSecond = zoomFrameRate,
         ) {
+            lastFrameMetaLeft = it.left
+            lastFrameMetaRight = it.right
             updatePhotoInfo(it.left, it.right)
             val distance = if (burnInEnabled) 12f else 0f
             val (x, y) = burnInController.offset(System.currentTimeMillis() / 300_000L, distance)
@@ -523,6 +532,23 @@ class ScreenSaverService : DreamService() {
         attemptFetch()
     }
 
+    private fun refreshServerSettings(onComplete: () -> Unit) {
+        getServerSettings(
+            onSuccess = { settings ->
+                if (applyServerSettings(settings)) {
+                    CachedServerSettingsStore.write(applicationContext, settings)
+                }
+                onComplete()
+            },
+            onFailure = { error ->
+                Log.w("ServerSettings", "Unable to refresh server settings: ${error.message}")
+                onComplete()
+            },
+            maxRetries = 0,
+            token = nativeSessionToken,
+        )
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -553,7 +579,7 @@ class ScreenSaverService : DreamService() {
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
         imageView2.visibility = if (useWebView) View.GONE else View.VISIBLE
         photoInfoContainer.visibility = View.GONE
-        txtDateTime.visibility = View.GONE //enabled in onSettingsLoaded based on server settings
+        txtDateTime.visibility = View.GONE // enabled after server settings are applied
 
         if (useWebView) {
             val activeWebView = ensureWebView()
@@ -599,19 +625,20 @@ class ScreenSaverService : DreamService() {
             loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
             nativeSessionToken = playbackSession.activate()
+            hasAppliedSettingsForSession = false
             destroyWebView()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             CachedServerSettingsStore.read(applicationContext)?.let { cachedSettings ->
-                serverSettings = cachedSettings
                 setOfflineIndicator(true)
-                onSettingsLoaded()
+                applyServerSettings(cachedSettings)
             }
             getServerSettings(
                 onSuccess = { settings ->
-                    CachedServerSettingsStore.write(applicationContext, settings)
-                    serverSettings = settings
-                    onSettingsLoaded()
+                    if (applyServerSettings(settings)) {
+                        CachedServerSettingsStore.write(applicationContext, settings)
+                    }
+                    settingsRefreshTimer.start()
                 },
                 onFailure = { error ->
                     Toast.makeText(
@@ -629,6 +656,7 @@ class ScreenSaverService : DreamService() {
         playbackSession.invalidate()
         stopImageTimer()
         stopWeatherTimer()
+        settingsRefreshTimer.stop()
         settingsCall?.cancel()
         settingsCall = null
         settingsRetryRunnable?.let(handler::removeCallbacks)
@@ -639,28 +667,50 @@ class ScreenSaverService : DreamService() {
         }
     }
 
-    private fun onSettingsLoaded() {
-        if (serverSettings.imageFill){
-            imageView1.scaleType = ImageView.ScaleType.CENTER_CROP
-            imageView2.scaleType = ImageView.ScaleType.CENTER_CROP
+    private fun applyServerSettings(settings: Helpers.ServerSettings): Boolean {
+        val previous = if (hasAppliedSettingsForSession) serverSettings else null
+        if (previous == settings) return false
+
+        serverSettings = settings
+        hasAppliedSettingsForSession = true
+        applyServerPresentation()
+
+        if (previous == null) {
+            startPlaybackAfterSettingsLoaded()
+            return true
         }
-        else{
-            imageView1.scaleType = ImageView.ScaleType.FIT_CENTER
-            imageView2.scaleType = ImageView.ScaleType.FIT_CENTER
+        if (previous.interval != settings.interval) imageTimer.reschedule()
+        if (previous.layout != settings.layout) {
+            synchronized(portraitCacheLock) {
+                portraitCache = null
+                portraitCacheGeneration = -1L
+            }
         }
+        lastFrameMetaLeft?.let { updatePhotoInfo(it, lastFrameMetaRight) }
+        updateDateTimeWeather()
+        updateWeatherTimer()
+        return true
+    }
+
+    private fun applyServerPresentation() {
+        val scaleType = if (serverSettings.imageFill) {
+            ImageView.ScaleType.CENTER_CROP
+        } else {
+            ImageView.ScaleType.FIT_CENTER
+        }
+        imageView1.scaleType = scaleType
+        imageView2.scaleType = scaleType
+
         if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
             photoInfoContainer.visibility = View.VISIBLE
             val size = metadataSizeSp.toFloat()
             txtPhotoInfoLeft.textSize = size
             txtPhotoInfoRight.textSize = size
-            if (serverSettings.primaryColor != null) {
-                val color = runCatching { serverSettings.primaryColor!!.toColorInt() }.getOrDefault(Color.WHITE)
-                txtPhotoInfoLeft.setTextColor(color)
-                txtPhotoInfoRight.setTextColor(color)
-            } else {
-                txtPhotoInfoLeft.setTextColor(Color.WHITE)
-                txtPhotoInfoRight.setTextColor(Color.WHITE)
-            }
+            val color = serverSettings.primaryColor?.let {
+                runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
+            } ?: Color.WHITE
+            txtPhotoInfoLeft.setTextColor(color)
+            txtPhotoInfoRight.setTextColor(color)
             applyOverlayStyle()
         } else {
             photoInfoContainer.visibility = View.GONE
@@ -669,19 +719,18 @@ class ScreenSaverService : DreamService() {
             txtDateTime.visibility = View.VISIBLE
             txtDateTime.textSize = clockSizeSp / 2f
             txtDateTime.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            if (serverSettings.primaryColor != null) {
-                txtDateTime.setTextColor(
-                    runCatching { serverSettings.primaryColor!!.toColorInt() }
-                        .getOrDefault(Color.WHITE)
-                )
-            } else {
-                txtDateTime.setTextColor(Color.WHITE)
-            }
+            txtDateTime.setTextColor(
+                serverSettings.primaryColor?.let {
+                    runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
+                } ?: Color.WHITE,
+            )
             applyOverlayStyle()
         } else {
             txtDateTime.visibility = View.GONE
         }
+    }
 
+    private fun startPlaybackAfterSettingsLoaded() {
         val cachedImage = currentImage ?: CachedImageStore.read(applicationContext)
         if (cachedImage != null) {
             val token = nativeSessionToken
@@ -703,12 +752,11 @@ class ScreenSaverService : DreamService() {
             getNextImage()
         }
         startImageTimer()
+        updateWeatherTimer()
+    }
 
-        if (serverSettings.showWeatherDescription) {
-            weatherTimer.start(0L)
-        } else {
-            stopWeatherTimer()
-        }
+    private fun updateWeatherTimer() {
+        if (serverSettings.showWeatherDescription) weatherTimer.start(0L) else stopWeatherTimer()
     }
 
     private fun acquireWakeLock() {

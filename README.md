@@ -112,7 +112,9 @@ released after each crossfade. High-confidence embedded black borders are remove
 Side fill comes from a 320×180 ARGB blurred, darkened copy of the actual photo with adaptive
 five-stop feathered seams; split dividers use a darkened blend of both photos and default to 6dp.
 Native settings expose edge width, blur radius, and background darkness; WF1561 defaults are 32dp,
-radius 16 with three passes, and alpha 84 respectively. The offline
+radius 16 with three passes, and alpha 84 respectively. During activity and screensaver playback,
+server settings are checked every 30 seconds; changed presentation options are applied without
+restarting an unchanged slideshow, while failed checks retain the last settings. The offline
 cache stores compressed binary image data and is written at
 most every 15 minutes; a compact indicator briefly reports failed image refreshes. `Ken Burns zoom
 frame rate` can be tuned from 10–60 FPS in native settings. On the WF1561, the 30 FPS path reduced
