@@ -35,12 +35,12 @@ class RpcHttpServer(
         if (!session.uri.startsWith("/api/v1/")) return serveLegacy(session)
         val body = if (session.method == Method.PUT || session.method == Method.POST) {
             val length = session.headers["content-length"]?.toLongOrNull()
-                ?: return json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", "Content-Length is required"))
+                ?: return unreadBodyRejected("Content-Length is required")
             if (length !in 0..MAX_BODY_BYTES.toLong()) {
-                return json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", "Request body too large"))
+                return unreadBodyRejected("Request body too large")
             }
             if (session.headers["content-type"]?.substringBefore(';')?.trim()?.lowercase() != "application/json") {
-                return json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", "Content-Type must be application/json"))
+                return unreadBodyRejected("Content-Type must be application/json")
             }
             try {
                 val files = HashMap<String, String>()
@@ -56,6 +56,11 @@ class RpcHttpServer(
         val result = router.route(session.method.name, session.uri, body)
         return json(status(result.status), result.json)
     }
+
+    // The request body was never read, so its bytes would be parsed as the next keep-alive request.
+    private fun unreadBodyRejected(error: String): Response =
+        json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", error))
+            .apply { closeConnection(true) }
 
     private fun serveLegacy(session: IHTTPSession): Response {
         if (session.method != Method.POST) {
