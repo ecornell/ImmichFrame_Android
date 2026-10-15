@@ -40,6 +40,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
             findPreference<Preference>("backgroundBlurRadius"),
             findPreference<Preference>("backgroundDarkness"),
             findPreference<Preference>("zoomFrameRate"),
+            findPreference<Preference>("nativeVideos"),
         )
         val chkActiveTimes = findPreference<SwitchPreferenceCompat>("activeTimes")
         val editActiveSchedule = findPreference<Preference>("active_schedule_edit")

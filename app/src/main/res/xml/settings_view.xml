@@ -113,6 +113,11 @@
             app:showSeekBarValue="true"
             android:title="Ken Burns zoom frame rate" />
         <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="nativeVideos"
+            android:summary="Stream videos when the server has ShowVideos enabled. Turn off if this device cannot decode them."
+            android:title="Play videos in native mode" />
+        <SwitchPreferenceCompat
             android:defaultValue="false"
             android:key="showCurrentDate"
             android:title="Show Current Date?" />

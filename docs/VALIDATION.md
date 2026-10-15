@@ -58,7 +58,19 @@ target and a modern Android target. Do not run unqualified builds against produc
    frame should remain visible; automatic playback should retry without an uncaught exception.
    Resume valid payloads and verify recovery. Pause or change modes during decode/retry and confirm
    stale work cannot present a frame, fetch a paired image, or restart a stopped timer.
-5. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+5. With `ShowVideos` enabled on the server and **Play videos in native mode** on, a video should
+   show its poster, fade into playback (muted unless `PlayAudio`), and advance when it ends — not
+   at the photo interval. Pause before and during playback, use previous/next, toggle display
+   sleep, and break the stream mid-video: the poster must remain, the watchdog must advance, and
+   no stopped timer may restart. Turning the preference off, or an older server, yields photos
+   only. Record decoder support and PSS for 1080p H.264 and HEVC on each target device.
+6. Check stream throughput on each frame's real Wi-Fi: play the largest-bitrate videos in the
+   library several times and confirm none stall or are cut off by the watchdog (duration + 15 s).
+   Videos are streamed through ImmichFrame at their Immich playback bitrate, often the original
+   (~15 Mbit/s for 1080p) with no on-device cache. Record the frame's link rate/RSSI. If playback
+   stalls, set Immich's transcode policy to all videos at a lower target resolution (e.g. 720p)
+   and re-run the transcode job, accepting that it applies to every Immich client.
+7. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
 TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this

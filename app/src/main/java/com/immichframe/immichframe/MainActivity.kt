@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -23,6 +24,7 @@ import android.text.style.RelativeSizeSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.TextureView
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -61,6 +63,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
+    private lateinit var videoView: TextureView
+    private lateinit var videoPlayer: NativeVideoPlayer
     private lateinit var photoInfoContainer: LinearLayout
     private lateinit var txtPhotoInfoLeft: TextView
     private lateinit var txtPhotoInfoRight: TextView
@@ -118,6 +122,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var imageGeneration = 0L
     private var imageRetryMillis = 5_000L
     private var useWebView = true
+    private var nativeVideos = true
+    private var nativeAuthSecret = ""
     private var frameBackground = FrameBackground.THUMBHASH
     private var frameScale = FrameScale.FIT
     private var splitGapPx = 6
@@ -218,6 +224,8 @@ class MainActivity : AppCompatActivity() {
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
         framePresenter = NativeFramePresenter(imageView1, imageView2, handler)
+        videoView = findViewById(R.id.videoView)
+        videoPlayer = NativeVideoPlayer(applicationContext, videoView)
         photoInfoContainer = findViewById(R.id.photoInfoContainer)
         txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
         txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
@@ -289,10 +297,15 @@ class MainActivity : AppCompatActivity() {
         imageResponse: Helpers.ImageResponse,
         persist: Boolean = true,
         allowPortraitPair: Boolean = true,
+        playVideo: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
         val token = nativeSessionToken
         if (!playbackSession.isCurrent(token)) return
+        // A video is shown alone over its poster, which is neither paired nor cached offline.
+        val isVideo = imageResponse.isVideo
+        val pairPortraits = allowPortraitPair && !isVideo
+        val persistImage = persist && !isVideo
         val generation = ++imageGeneration
         imageJob?.cancel()
         imageJob = null
@@ -301,7 +314,7 @@ class MainActivity : AppCompatActivity() {
         if (width <= 1 || height <= 1) {
             window.decorView.doOnNextLayout {
                 if (generation == imageGeneration && playbackSession.isCurrent(token)) {
-                    showImage(imageResponse, persist, allowPortraitPair, afterPresented)
+                    showImage(imageResponse, persist, allowPortraitPair, playVideo, afterPresented)
                 }
             }
             return
@@ -319,7 +332,7 @@ class MainActivity : AppCompatActivity() {
                 synchronized(portraitCacheLock) {
                     if (generation != imageGeneration) return@launch
                     if (PlaybackPolicies.shouldWaitForPortraitPair(
-                            isPortrait, serverSettings.layout, allowPortraitPair,
+                            isPortrait, serverSettings.layout, pairPortraits,
                         )) {
                         val cached = portraitCache
                         if (cached != null && portraitCacheGeneration == generation - 1L) {
@@ -352,12 +365,13 @@ class MainActivity : AppCompatActivity() {
                     if (generation == imageGeneration && playbackSession.isCurrent(token) &&
                         !isFinishing && !isDestroyed
                     ) {
-                        updateUI(rendered)
+                        updateUI(rendered, zoomEnabled = serverSettings.imageZoom && !isVideo)
                         handedOff = true
+                        if (isVideo && playVideo) startVideo(imageResponse, token)
                         afterPresented?.invoke()
                     }
                 }
-                if (persist && handedOff && generation == imageGeneration) {
+                if (persistImage && handedOff && generation == imageGeneration) {
                     CachedImageStore.writeIfStale(applicationContext, prepared)
                 }
             } catch (error: Exception) {
@@ -375,11 +389,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateUI(frame: RenderedFrame) {
+    private fun updateUI(frame: RenderedFrame, zoomEnabled: Boolean) {
+        val transitionMillis = (serverSettings.transitionDuration * 1_000).toLong()
+        videoPlayer.fadeOutAndRelease(transitionMillis)
         framePresenter.present(
             frame = frame,
-            transitionMillis = (serverSettings.transitionDuration * 1_000).toLong(),
-            zoomEnabled = serverSettings.imageZoom,
+            transitionMillis = transitionMillis,
+            zoomEnabled = zoomEnabled,
             zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
             zoomFramesPerSecond = zoomFrameRate,
         ) {
@@ -388,6 +404,42 @@ class MainActivity : AppCompatActivity() {
             updatePhotoInfo(it.left, it.right)
             updateDateTimeWeather()
         }
+    }
+
+    private fun startVideo(imageResponse: Helpers.ImageResponse, token: Long) {
+        val assetId = imageResponse.assetId ?: return
+        val baseUrl = retrofit?.baseUrl()?.toString() ?: return
+        val intervalSeconds = serverSettings.interval
+        // Keep the slideshow timer armed for the whole video: it advances on completion and the
+        // watchdog still advances a frame whose stream stalls or never reports completion.
+        imageTimer.retryAfter(
+            VideoPlaybackPolicy.startupWatchdogMillis(imageResponse.durationSeconds, intervalSeconds),
+        )
+        videoPlayer.play(
+            uri = Uri.parse(Helpers.videoUrl(baseUrl, assetId)),
+            headers = if (nativeAuthSecret.isBlank()) emptyMap()
+            else mapOf("Authorization" to "Bearer $nativeAuthSecret"),
+            crop = frameScale == FrameScale.CROP,
+            playAudio = serverSettings.playAudio,
+            revealMillis = (serverSettings.transitionDuration * 1_000).toLong(),
+            listener = object : NativeVideoPlayer.Listener {
+                override fun onVideoPrepared(durationMillis: Int) {
+                    if (!playbackSession.isCurrent(token)) return
+                    imageTimer.retryAfter(
+                        VideoPlaybackPolicy.playingWatchdogMillis(durationMillis, intervalSeconds),
+                    )
+                }
+
+                override fun onVideoFinished() {
+                    if (playbackSession.isCurrent(token)) imageTimer.retryAfter(0L)
+                }
+
+                override fun onVideoFailed() {
+                    // Show the poster like a photo for the normal interval.
+                    if (playbackSession.isCurrent(token)) imageTimer.retryAfter(intervalSeconds * 1_000L)
+                }
+            },
+        )
     }
 
     private fun updatePhotoInfo(left: FrameMeta, right: FrameMeta?) {
@@ -454,7 +506,7 @@ class MainActivity : AppCompatActivity() {
         if (!playbackSession.isCurrent(token) || imageCall?.isExecuted == true ||
             imageJob?.isActive == true || !::apiService.isInitialized || isFrameInactive == true
         ) return
-        val call = apiService.getImageData()
+        val call = apiService.getImageData(includeVideos = nativeVideos)
         imageCall = call
         call.enqueue(object : Callback<Helpers.ImageResponse> {
             override fun onResponse(
@@ -533,6 +585,7 @@ class MainActivity : AppCompatActivity() {
         imageTimer.stop()
         ++imageGeneration
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
+        if (::videoPlayer.isInitialized) videoPlayer.pause()
         imageCall?.cancel()
         imageCall = null
         imageJob?.cancel()
@@ -678,7 +731,9 @@ class MainActivity : AppCompatActivity() {
         stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
+        nativeVideos = prefs.getBoolean("nativeVideos", true)
         val authSecret = prefs.getString("authSecret", "") ?: ""
+        nativeAuthSecret = authSecret
         val settingsLock = prefs.getBoolean("settingsLock", false)
         val activeTimes = prefs.getBoolean("activeTimes", false)
         remoteState.update {
@@ -692,6 +747,7 @@ class MainActivity : AppCompatActivity() {
         webViewContainer.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
         imageView2.visibility = if (useWebView) View.GONE else View.VISIBLE
+        videoView.visibility = if (useWebView) View.GONE else View.VISIBLE
         btnPrevious.visibility = if (useWebView) View.GONE else View.VISIBLE
         btnPause.visibility = if (useWebView) View.GONE else View.VISIBLE
         btnNext.visibility = if (useWebView) View.GONE else View.VISIBLE
@@ -804,6 +860,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopNativePlayback() {
         playbackSession.invalidate()
         stopImageTimer()
+        if (::videoPlayer.isInitialized) videoPlayer.release()
         stopWeatherTimer()
         settingsRefreshTimer.stop()
         settingsCall?.cancel()
@@ -829,7 +886,8 @@ class MainActivity : AppCompatActivity() {
             startPlaybackAfterSettingsLoaded()
             return true
         }
-        if (previous.interval != settings.interval) imageTimer.reschedule()
+        // A playing video owns the timer until it ends or its watchdog fires.
+        if (previous.interval != settings.interval && !videoPlayer.isActive) imageTimer.reschedule()
         if (previous.layout != settings.layout) {
             synchronized(portraitCacheLock) {
                 portraitCache = null
@@ -890,6 +948,7 @@ class MainActivity : AppCompatActivity() {
                 cachedImage,
                 persist = false,
                 allowPortraitPair = false,
+                playVideo = false,
                 afterPresented = {
                     currentImage = cachedImage
                     remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
@@ -1248,6 +1307,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         hideSystemUI()
         configureRemoteInterfaces()
+        if (isImageTimerRunning) videoPlayer.resume()
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
@@ -1266,11 +1326,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
+        if (::videoPlayer.isInitialized) videoPlayer.pause()
         super.onPause()
     }
 
     override fun onDestroy() {
         if (::framePresenter.isInitialized) framePresenter.clear()
+        if (::videoPlayer.isInitialized) videoPlayer.release()
         destroyWebView()
         super.onDestroy()
         rpcServer?.stop()

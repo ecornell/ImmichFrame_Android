@@ -8,7 +8,9 @@ import android.graphics.Paint
 import android.util.Base64
 import retrofit2.Call
 import retrofit2.http.GET
+import retrofit2.http.Query
 import androidx.core.graphics.scale
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -124,8 +126,26 @@ object Helpers {
         val randomImageBase64: String,
         val thumbHashImageBase64: String,
         val photoDate: String,
-        val imageLocation: String
-    )
+        val imageLocation: String,
+        // Present only on servers that support includeVideos; for a video the image is its poster.
+        val assetId: String? = null,
+        val assetType: Int? = null,
+        val durationSeconds: Double? = null,
+    ) {
+        val isVideo: Boolean get() = assetType == ASSET_TYPE_VIDEO && !assetId.isNullOrBlank()
+    }
+
+    // Immich AssetTypeEnum ordinal as serialized by the ImmichFrame server.
+    private const val ASSET_TYPE_VIDEO = 1
+
+    fun videoUrl(baseUrl: String, assetId: String): String =
+        baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/Asset")
+            .addPathSegment(assetId)
+            .addPathSegment("Asset")
+            .addQueryParameter("assetType", "VIDEO")
+            .build()
+            .toString()
 
     data class PreparedImage(
         val response: ImageResponse,
@@ -183,7 +203,8 @@ object Helpers {
         val imageZoom: Boolean,
         val imageFill: Boolean,
         val layout: String,
-        val language: String
+        val language: String,
+        val playAudio: Boolean = false,
     )
 
     data class Weather(
@@ -197,7 +218,7 @@ object Helpers {
 
     interface ApiService {
         @GET("api/Asset/RandomImageAndInfo")
-        fun getImageData(): Call<ImageResponse>
+        fun getImageData(@Query("includeVideos") includeVideos: Boolean): Call<ImageResponse>
 
         @GET("api/Config")
         fun getServerSettings(): Call<ServerSettings>
