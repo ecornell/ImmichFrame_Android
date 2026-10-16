@@ -26,6 +26,12 @@ runbook for those steps.
   `AsyncRefreshTimerTest` verifies the shared 30-second server-settings cadence, single in-flight
   refresh, lifecycle cancellation, and rejection of stale completions. Activity and DreamService
   share these timer implementations so running flags cannot drift from callback removal.
+- `NextSlideQueueTest`: a prefetched slide is presented immediately, an advance during a build
+  waits for it, only one build runs at a time, stale slides are discarded, a failed prefetch is
+  silent while a failed requested build is reported, and pausing keeps but never presents a slide.
+- `FrameRendererTest`: letterbox regions cover everything outside a fitted photo (none when
+  cropped), the feather overlay is the complement of the former photo mask, and the half-size
+  background stage halves the blur radius.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies
@@ -58,6 +64,12 @@ target and a modern Android target. Do not run unqualified builds against produc
    frame should remain visible; automatic playback should retry without an uncaught exception.
    Resume valid payloads and verify recovery. Pause or change modes during decode/retry and confirm
    stale work cannot present a frame, fetch a paired image, or restart a stopped timer.
+   The next slide is built after each crossfade: a slide should change exactly on the interval,
+   next/previous and pause/resume must not skip or double-advance, and a failed prefetch must not
+   show the offline indicator while the current slide is still good. In split view, check that
+   portraits still pair and a lone portrait followed by a landscape shows the landscape.
+   Compare feathered fit-mode edges (blurred, average, and black backgrounds) against a
+   pre-change screenshot for seams or banding.
 5. With `ShowVideos` enabled on the server and **Play videos in native mode** on, a video should
    show its poster, fade into playback (muted unless `PlayAudio`), and advance when it ends — not
    at the photo interval. Pause before and during playback, use previous/next, toggle display

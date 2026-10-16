@@ -22,6 +22,51 @@ class FrameRendererTest {
         assertTrue(crop.height >= slot.height)
     }
 
+    @Test fun letterboxCoversEverythingOutsideTheFittedPhoto() {
+        val slot = IntBounds(0, 0, 1920, 1080)
+        val photo = FrameRenderer.destinationBounds(1470, 1188, slot, FrameScale.FIT)
+        assertTrue(!FrameRenderer.coversSlot(photo, slot))
+        val bands = FrameRenderer.letterboxBounds(slot, photo, 2f)
+        assertEquals(2, bands.size)
+        // Left and right bands span the full height and reach 2 px under the photo.
+        assertEquals(FloatBounds(0f, 0f, photo.left + 2f, 1080f), bands[0])
+        assertEquals(FloatBounds(photo.right - 2f, 0f, 1920f, 1080f), bands[1])
+    }
+
+    @Test fun letterboxAddsTopAndBottomBandsForWidePhotos() {
+        val slot = IntBounds(0, 0, 960, 1080)
+        val photo = FrameRenderer.destinationBounds(1920, 1080, slot, FrameScale.FIT)
+        val bands = FrameRenderer.letterboxBounds(slot, photo, 2f)
+        assertEquals(
+            listOf(
+                FloatBounds(0f, 0f, 960f, photo.top + 2f),
+                FloatBounds(0f, photo.bottom - 2f, 960f, 1080f),
+            ),
+            bands,
+        )
+    }
+
+    @Test fun croppedPhotoNeedsNoBackground() {
+        val slot = IntBounds(0, 0, 1920, 1080)
+        val crop = FrameRenderer.destinationBounds(1470, 1188, slot, FrameScale.CROP)
+        assertTrue(FrameRenderer.coversSlot(crop, slot))
+        assertTrue(FrameRenderer.letterboxBounds(slot, crop, 2f).isEmpty())
+    }
+
+    @Test fun featherCoverIsTheComplementOfTheFormerPhotoMask() {
+        val formerMask = intArrayOf(0, 26, 128, 230, 255)
+        assertEquals(
+            formerMask.map { 255 - it },
+            FrameRenderer.FEATHER_COVER_ALPHAS.toList(),
+        )
+    }
+
+    @Test fun halfSizeStageHalvesTheBlurRadius() {
+        assertEquals(8, FrameRenderer.stageBlurRadius(16))
+        assertEquals(1, FrameRenderer.stageBlurRadius(1))
+        assertEquals(12, FrameRenderer.stageBlurRadius(99))
+    }
+
     @Test fun burnInOffsetsStayBounded() {
         val controller = OverlayBurnInController()
         repeat(20) {

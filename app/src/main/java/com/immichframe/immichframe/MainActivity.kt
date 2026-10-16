@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.Process
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -49,9 +50,12 @@ import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
+import retrofit2.awaitResponse
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlinx.coroutines.*
 import androidx.lifecycle.lifecycleScope
 import androidx.core.graphics.toColorInt
@@ -111,7 +115,6 @@ class MainActivity : AppCompatActivity() {
             override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
         }
     }
-    private var imageCall: Call<Helpers.ImageResponse>? = null
     private var weatherCall: Call<Helpers.Weather>? = null
     private var settingsCall: Call<Helpers.ServerSettings>? = null
     private var settingsRetryRunnable: Runnable? = null
@@ -146,9 +149,10 @@ class MainActivity : AppCompatActivity() {
     private var currentImage: Helpers.ImageResponse? = null
     private var lastFrameMetaLeft: FrameMeta? = null
     private var lastFrameMetaRight: FrameMeta? = null
-    private var portraitCache: Helpers.PreparedImage? = null
-    private var portraitCacheGeneration = -1L
-    private val portraitCacheLock = Any()
+    private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
+    private var slideJob: Job? = null
+    private var slideBuildGeneration = 0L
+    private val prefetchRunnable = Runnable { prefetchNextSlide() }
     private lateinit var framePresenter: NativeFramePresenter
     private val imageTimer = PlaybackTimer(
         { task, delay -> handler.postDelayed(task, delay) }, handler::removeCallbacks,
@@ -293,28 +297,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Shows one specific image alone: the cached image at startup, or the previous image. Live
+     * playback goes through [getNextImage], which builds slides ahead of time.
+     */
     private fun showImage(
         imageResponse: Helpers.ImageResponse,
-        persist: Boolean = true,
-        allowPortraitPair: Boolean = true,
         playVideo: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
         val token = nativeSessionToken
         if (!playbackSession.isCurrent(token)) return
-        // A video is shown alone over its poster, which is neither paired nor cached offline.
         val isVideo = imageResponse.isVideo
-        val pairPortraits = allowPortraitPair && !isVideo
-        val persistImage = persist && !isVideo
         val generation = ++imageGeneration
         imageJob?.cancel()
         imageJob = null
-        val width = window.decorView.width
-        val height = window.decorView.height
-        if (width <= 1 || height <= 1) {
+        val spec = currentSlideSpec()
+        if (spec == null) {
             window.decorView.doOnNextLayout {
                 if (generation == imageGeneration && playbackSession.isCurrent(token)) {
-                    showImage(imageResponse, persist, allowPortraitPair, playVideo, afterPresented)
+                    showImage(imageResponse, playVideo, afterPresented)
                 }
             }
             return
@@ -325,42 +327,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val prepared = Helpers.prepareImage(imageResponse)
                 if (generation != imageGeneration) return@launch
-                val isPortrait = prepared.height > prepared.width
-                var first = prepared
-                var second: Helpers.PreparedImage? = null
-                var waitingForPair = false
-                synchronized(portraitCacheLock) {
-                    if (generation != imageGeneration) return@launch
-                    if (PlaybackPolicies.shouldWaitForPortraitPair(
-                            isPortrait, serverSettings.layout, pairPortraits,
-                        )) {
-                        val cached = portraitCache
-                        if (cached != null && portraitCacheGeneration == generation - 1L) {
-                            first = cached
-                            second = prepared
-                            portraitCache = null
-                            portraitCacheGeneration = -1L
-                        } else {
-                            portraitCache = prepared
-                            portraitCacheGeneration = generation
-                            waitingForPair = true
-                        }
-                    } else {
-                        portraitCache = null
-                        portraitCacheGeneration = -1L
-                    }
-                }
-                if (waitingForPair) {
-                    handler.postDelayed({ if (generation == imageGeneration) getNextImage() }, 100L)
-                    return@launch
-                }
-                val gapColor = runCatching {
-                    (serverSettings.primaryColor?.takeIf(String::isNotBlank) ?: "#000000").toColorInt()
-                }.getOrDefault(Color.BLACK)
-                rendered = FrameRenderer.render(
-                    width, height, first, second, frameScale, frameBackground, splitGapPx, gapColor,
-                    edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
-                )
+                rendered = renderSlide(spec, prepared, null)
                 withContext(Dispatchers.Main) {
                     if (generation == imageGeneration && playbackSession.isCurrent(token) &&
                         !isFinishing && !isDestroyed
@@ -370,9 +337,6 @@ class MainActivity : AppCompatActivity() {
                         if (isVideo && playVideo) startVideo(imageResponse, token)
                         afterPresented?.invoke()
                     }
-                }
-                if (persistImage && handedOff && generation == imageGeneration) {
-                    CachedImageStore.writeIfStale(applicationContext, prepared)
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -388,6 +352,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private data class SlideSpec(
+        val width: Int,
+        val height: Int,
+        val scale: FrameScale,
+        val background: FrameBackground,
+        val gapPx: Int,
+        val gapColor: Int,
+        val featherPx: Int,
+        val blurRadius: Int,
+        val darkness: Int,
+        val layout: String,
+    )
+
+    /** A rendered slide waiting to be presented; [persist] is cached for offline startup. */
+    private class BuiltSlide(
+        val frame: RenderedFrame,
+        val response: Helpers.ImageResponse,
+        val persist: Helpers.PreparedImage?,
+        val spec: SlideSpec,
+        val token: Long,
+    )
 
     private fun updateUI(frame: RenderedFrame, zoomEnabled: Boolean) {
         val transitionMillis = (serverSettings.transitionDuration * 1_000).toLong()
@@ -501,50 +487,169 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Advances live playback: presents the prefetched slide, or builds one now. */
     private fun getNextImage() {
         val token = nativeSessionToken
-        if (!playbackSession.isCurrent(token) || imageCall?.isExecuted == true ||
-            imageJob?.isActive == true || !::apiService.isInitialized || isFrameInactive == true
+        if (!playbackSession.isCurrent(token) || imageJob?.isActive == true ||
+            !::apiService.isInitialized || isFrameInactive == true
         ) return
-        val call = apiService.getImageData(includeVideos = nativeVideos)
-        imageCall = call
-        call.enqueue(object : Callback<Helpers.ImageResponse> {
-            override fun onResponse(
-                call: Call<Helpers.ImageResponse>,
-                response: Response<Helpers.ImageResponse>
-            ) {
-                if (imageCall !== call || !playbackSession.isCurrent(token)) return
-                imageCall = null
-                if (response.isSuccessful) {
-                    val imageResponse = response.body()
-                    if (imageResponse != null) {
-                        showImage(imageResponse, afterPresented = {
-                            if (playbackSession.isCurrent(token)) {
-                                setOfflineIndicator(false)
-                                previousImage = currentImage
-                                currentImage = imageResponse
-                                imageRetryMillis = 5_000L
-                            }
-                        })
-                    } else {
+        val spec = currentSlideSpec()
+        if (spec == null) {
+            window.decorView.doOnNextLayout { if (playbackSession.isCurrent(token)) getNextImage() }
+            return
+        }
+        when (val advance = nextSlides.advance { it.token == token && it.spec == spec }) {
+            is NextSlideQueue.Advance.Present -> presentSlide(advance.slide, token)
+            NextSlideQueue.Advance.Waiting -> Unit
+            NextSlideQueue.Advance.Build -> buildSlide(token, spec, prefetch = false)
+        }
+    }
+
+    private fun currentSlideSpec(): SlideSpec? {
+        val width = window.decorView.width
+        val height = window.decorView.height
+        if (width <= 1 || height <= 1) return null
+        val gapColor = runCatching {
+            (serverSettings.primaryColor?.takeIf(String::isNotBlank) ?: "#000000").toColorInt()
+        }.getOrDefault(Color.BLACK)
+        return SlideSpec(
+            width, height, frameScale, frameBackground, splitGapPx, gapColor, edgeFeatherPx,
+            backgroundBlurRadius, backgroundDarkness, serverSettings.layout,
+        )
+    }
+
+    private fun renderSlide(
+        spec: SlideSpec,
+        first: Helpers.PreparedImage,
+        second: Helpers.PreparedImage?,
+    ): RenderedFrame = FrameRenderer.render(
+        spec.width, spec.height, first, second, spec.scale, spec.background, spec.gapPx,
+        spec.gapColor, spec.featherPx, spec.blurRadius, spec.darkness,
+    )
+
+    private fun buildSlide(token: Long, spec: SlideSpec, prefetch: Boolean) {
+        val generation = slideBuildGeneration
+        val api = apiService
+        val includeVideos = nativeVideos
+        slideJob = lifecycleScope.launch(slideDispatcher) {
+            // A prefetch is not latency-critical; keep it from competing with frame rendering.
+            Process.setThreadPriority(
+                if (prefetch) Process.THREAD_PRIORITY_BACKGROUND else Process.THREAD_PRIORITY_DEFAULT,
+            )
+            var built: BuiltSlide? = null
+            try {
+                built = fetchAndRenderSlide(api, includeVideos, spec, token)
+                withContext(Dispatchers.Main) {
+                    if (generation != slideBuildGeneration || !playbackSession.isCurrent(token)) {
+                        return@withContext
+                    }
+                    val slide = built ?: return@withContext
+                    built = null
+                    nextSlides.onBuilt(slide)?.let { requested ->
+                        // Settings may have changed while playback waited on this build.
+                        if (requested.spec == currentSlideSpec()) {
+                            presentSlide(requested, token)
+                        } else {
+                            requested.frame.bitmap.recycle()
+                            getNextImage()
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                withContext(Dispatchers.Main) {
+                    if (generation != slideBuildGeneration || !playbackSession.isCurrent(token)) {
+                        return@withContext
+                    }
+                    // A failed prefetch leaves the current frame alone; the next advance retries.
+                    if (nextSlides.onFailed()) {
+                        Log.e("NativeFrame", "Unable to load the next image; retaining the current frame", error)
                         setOfflineIndicator(true)
                         scheduleImageRetry()
+                    } else {
+                        Log.w("NativeFrame", "Unable to prefetch the next image: ${error.message}")
                     }
-                } else {
-                    setOfflineIndicator(true)
-                    scheduleImageRetry()
                 }
+            } finally {
+                built?.frame?.bitmap?.takeUnless { it.isRecycled }?.recycle()
             }
+        }
+    }
 
-            override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
-                if (imageCall !== call || !playbackSession.isCurrent(token)) return
-                imageCall = null
-                if (!call.isCanceled) {
-                    setOfflineIndicator(true)
-                    scheduleImageRetry()
-                }
-            }
-        })
+    private suspend fun fetchAndRenderSlide(
+        api: Helpers.ApiService,
+        includeVideos: Boolean,
+        spec: SlideSpec,
+        token: Long,
+    ): BuiltSlide {
+        var first = Helpers.prepareImage(fetchImage(api, includeVideos))
+        var second: Helpers.PreparedImage? = null
+        // In split view a portrait waits for the next image: another portrait pairs with it,
+        // anything else is shown alone in its place.
+        if (waitsForPortraitPair(first, spec.layout)) {
+            val next = Helpers.prepareImage(fetchImage(api, includeVideos))
+            if (waitsForPortraitPair(next, spec.layout)) second = next else first = next
+        }
+        val frame = renderSlide(spec, first, second)
+        val shown = second ?: first
+        // A video poster is not cached for offline startup.
+        return BuiltSlide(frame, shown.response, shown.takeUnless { it.response.isVideo }, spec, token)
+    }
+
+    private fun waitsForPortraitPair(image: Helpers.PreparedImage, layout: String): Boolean =
+        PlaybackPolicies.shouldWaitForPortraitPair(
+            image.height > image.width, layout, allowPortraitPair = !image.response.isVideo,
+        )
+
+    private suspend fun fetchImage(api: Helpers.ApiService, includeVideos: Boolean): Helpers.ImageResponse {
+        val response = api.getImageData(includeVideos).awaitResponse()
+        if (!response.isSuccessful) throw IOException("HTTP ${response.code()}: ${response.message()}")
+        return response.body() ?: throw IOException("Empty image response")
+    }
+
+    private fun presentSlide(slide: BuiltSlide, token: Long) {
+        if (isFinishing || isDestroyed) {
+            slide.frame.bitmap.recycle()
+            return
+        }
+        ++imageGeneration
+        imageJob?.cancel()
+        imageJob = null
+        val isVideo = slide.response.isVideo
+        updateUI(slide.frame, zoomEnabled = serverSettings.imageZoom && !isVideo)
+        if (isVideo) startVideo(slide.response, token)
+        setOfflineIndicator(false)
+        previousImage = currentImage
+        currentImage = slide.response
+        imageRetryMillis = 5_000L
+        slide.persist?.let { prepared ->
+            lifecycleScope.launch(Dispatchers.IO) { CachedImageStore.writeIfStale(applicationContext, prepared) }
+        }
+        schedulePrefetch()
+    }
+
+    /** Builds the next slide once the crossfade has finished, so the two never compete. */
+    private fun schedulePrefetch() {
+        handler.removeCallbacks(prefetchRunnable)
+        val transitionMillis = (serverSettings.transitionDuration * 1_000).toLong()
+        handler.postDelayed(prefetchRunnable, transitionMillis + PREFETCH_AFTER_TRANSITION_MILLIS)
+    }
+
+    private fun prefetchNextSlide() {
+        val token = nativeSessionToken
+        if (!playbackSession.isCurrent(token) || !isImageTimerRunning || isFrameInactive == true ||
+            !::apiService.isInitialized
+        ) return
+        val spec = currentSlideSpec() ?: return
+        if (nextSlides.beginPrefetch()) buildSlide(token, spec, prefetch = true)
+    }
+
+    private fun clearNextSlides() {
+        handler.removeCallbacks(prefetchRunnable)
+        slideBuildGeneration++
+        slideJob?.cancel()
+        slideJob = null
+        nextSlides.clear()
     }
 
     private fun scheduleImageRetry() {
@@ -586,8 +691,8 @@ class MainActivity : AppCompatActivity() {
         ++imageGeneration
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
         if (::videoPlayer.isInitialized) videoPlayer.pause()
-        imageCall?.cancel()
-        imageCall = null
+        // Keep a ready or in-flight next slide for resume, but never present it while stopped.
+        nextSlides.withdrawRequest()
         imageJob?.cancel()
         imageJob = null
     }
@@ -867,10 +972,7 @@ class MainActivity : AppCompatActivity() {
         settingsCall = null
         settingsRetryRunnable?.let(handler::removeCallbacks)
         settingsRetryRunnable = null
-        synchronized(portraitCacheLock) {
-            portraitCache = null
-            portraitCacheGeneration = -1L
-        }
+        clearNextSlides()
     }
 
     private fun applyServerSettings(settings: Helpers.ServerSettings): Boolean {
@@ -888,12 +990,7 @@ class MainActivity : AppCompatActivity() {
         }
         // A playing video owns the timer until it ends or its watchdog fires.
         if (previous.interval != settings.interval && !videoPlayer.isActive) imageTimer.reschedule()
-        if (previous.layout != settings.layout) {
-            synchronized(portraitCacheLock) {
-                portraitCache = null
-                portraitCacheGeneration = -1L
-            }
-        }
+        // A prefetched slide rendered for the old layout or colours fails its spec check and is rebuilt.
         lastFrameMetaLeft?.let { updatePhotoInfo(it, lastFrameMetaRight) }
         updateDateTimeWeather()
         updateWeatherTimer()
@@ -946,8 +1043,6 @@ class MainActivity : AppCompatActivity() {
             // waits for layout, and only a successfully presented frame becomes currentImage.
             showImage(
                 cachedImage,
-                persist = false,
-                allowPortraitPair = false,
                 playVideo = false,
                 afterPresented = {
                     currentImage = cachedImage
@@ -998,8 +1093,10 @@ class MainActivity : AppCompatActivity() {
             dispatchKeyEvent(event)
         } else {
             stopImageTimer()
-            getNextImage()
+            // Restart first: a prefetched video presents synchronously and arms its watchdog
+            // through the running timer.
             startImageTimer()
+            getNextImage()
         }
         remoteState.update { it.copy(paused = false) }
     }
@@ -1015,8 +1112,8 @@ class MainActivity : AppCompatActivity() {
             if (isImageTimerRunning) {
                 stopImageTimer()
             } else {
-                getNextImage()
                 startImageTimer()
+                getNextImage()
             }
         }
         remoteState.update { it.copy(paused = !isImageTimerRunning) }
@@ -1497,5 +1594,14 @@ class MainActivity : AppCompatActivity() {
             it.setMargins(margin, margin, margin, margin)
             photoInfoContainer.layoutParams = it
         }
+    }
+
+    private companion object {
+        const val PREFETCH_AFTER_TRANSITION_MILLIS = 250L
+
+        /** A single thread builds slides, so a prefetch never runs two decodes at once. */
+        val slideDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ImmichFrame-slides")
+        }.asCoroutineDispatcher()
     }
 }
