@@ -79,26 +79,49 @@ internal object CachedImageStore {
         }
     }
 
+    /** Reads the cached image without re-encoding its bytes; null if missing or undecodable. */
+    fun readPrepared(context: Context): Helpers.PreparedImage? = synchronized(lock) {
+        readBinaryPrepared(File(context.filesDir, FILE_NAME))
+    } ?: read(context)?.let { legacy -> runCatching { Helpers.prepareImage(legacy) }.getOrNull() }
+
     fun read(context: Context): Helpers.ImageResponse? = synchronized(lock) {
         readBinary(File(context.filesDir, FILE_NAME))
             ?: readLegacy(File(context.filesDir, LEGACY_FILE_NAME))
     }
 
-    private fun readBinary(file: File): Helpers.ImageResponse? = runCatching {
+    private fun readBinary(file: File): Helpers.ImageResponse? = readBinaryParts(file)?.let { parts ->
+        Helpers.ImageResponse(
+            Base64.encodeToString(parts.image, Base64.NO_WRAP),
+            Base64.encodeToString(parts.thumb, Base64.NO_WRAP),
+            parts.date,
+            parts.location,
+        )
+    }
+
+    private fun readBinaryPrepared(file: File): Helpers.PreparedImage? = readBinaryParts(file)?.let { parts ->
+        runCatching {
+            Helpers.prepareImage(
+                Helpers.ImageResponse(
+                    "",
+                    Base64.encodeToString(parts.thumb, Base64.NO_WRAP),
+                    parts.date,
+                    parts.location,
+                ),
+                parts.image,
+            )
+        }.getOrNull()
+    }
+
+    private class Parts(val date: String, val location: String, val thumb: ByteArray, val image: ByteArray)
+
+    private fun readBinaryParts(file: File): Parts? = runCatching {
         val atomicFile = AtomicFile(file)
         DataInputStream(BufferedInputStream(atomicFile.openRead())).use { data ->
             require(atomicFile.baseFile.length() in 1..MAX_BYTES.toLong())
             require(data.readInt() == MAGIC)
             val date = readBytes(data).toString(Charsets.UTF_8)
             val location = readBytes(data).toString(Charsets.UTF_8)
-            val thumb = readBytes(data)
-            val image = readBytes(data)
-            Helpers.ImageResponse(
-                Base64.encodeToString(image, Base64.NO_WRAP),
-                Base64.encodeToString(thumb, Base64.NO_WRAP),
-                date,
-                location,
-            )
+            Parts(date, location, readBytes(data), readBytes(data))
         }
     }.getOrNull()
 

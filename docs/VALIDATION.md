@@ -32,6 +32,8 @@ runbook for those steps.
 - `FrameRendererTest`: letterbox regions cover everything outside a fitted photo (none when
   cropped), the feather overlay is the complement of the former photo mask, and the half-size
   background stage halves the blur radius.
+- `ImageResponseTest`: a metadata-only response (server `includeImage=false`) requires fetching
+  the raw preview bytes by asset id, while an older server's inline Base64 image is still used.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies

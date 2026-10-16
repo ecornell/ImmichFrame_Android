@@ -145,8 +145,9 @@ class MainActivity : AppCompatActivity() {
     private var currentWeather = ""
     private val isImageTimerRunning get() = imageTimer.isRunning
     private val handler = Handler(Looper.getMainLooper())
-    private var previousImage: Helpers.ImageResponse? = null
-    private var currentImage: Helpers.ImageResponse? = null
+    // Kept decoded: live responses no longer carry the image as Base64.
+    private var previousImage: Helpers.PreparedImage? = null
+    private var currentImage: Helpers.PreparedImage? = null
     private var lastFrameMetaLeft: FrameMeta? = null
     private var lastFrameMetaRight: FrameMeta? = null
     private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
@@ -302,12 +303,13 @@ class MainActivity : AppCompatActivity() {
      * playback goes through [getNextImage], which builds slides ahead of time.
      */
     private fun showImage(
-        imageResponse: Helpers.ImageResponse,
+        prepared: Helpers.PreparedImage,
         playVideo: Boolean = true,
         afterPresented: (() -> Unit)? = null,
     ) {
         val token = nativeSessionToken
         if (!playbackSession.isCurrent(token)) return
+        val imageResponse = prepared.response
         val isVideo = imageResponse.isVideo
         val generation = ++imageGeneration
         imageJob?.cancel()
@@ -316,7 +318,7 @@ class MainActivity : AppCompatActivity() {
         if (spec == null) {
             window.decorView.doOnNextLayout {
                 if (generation == imageGeneration && playbackSession.isCurrent(token)) {
-                    showImage(imageResponse, playVideo, afterPresented)
+                    showImage(prepared, playVideo, afterPresented)
                 }
             }
             return
@@ -325,8 +327,6 @@ class MainActivity : AppCompatActivity() {
             var rendered: RenderedFrame? = null
             var handedOff = false
             try {
-                val prepared = Helpers.prepareImage(imageResponse)
-                if (generation != imageGeneration) return@launch
                 rendered = renderSlide(spec, prepared, null)
                 withContext(Dispatchers.Main) {
                     if (generation == imageGeneration && playbackSession.isCurrent(token) &&
@@ -366,11 +366,10 @@ class MainActivity : AppCompatActivity() {
         val layout: String,
     )
 
-    /** A rendered slide waiting to be presented; [persist] is cached for offline startup. */
+    /** A rendered slide waiting to be presented; [image] is the newest image it shows. */
     private class BuiltSlide(
         val frame: RenderedFrame,
-        val response: Helpers.ImageResponse,
-        val persist: Helpers.PreparedImage?,
+        val image: Helpers.PreparedImage,
         val spec: SlideSpec,
         val token: Long,
     )
@@ -582,18 +581,16 @@ class MainActivity : AppCompatActivity() {
         spec: SlideSpec,
         token: Long,
     ): BuiltSlide {
-        var first = Helpers.prepareImage(fetchImage(api, includeVideos))
+        var first = fetchImage(api, includeVideos)
         var second: Helpers.PreparedImage? = null
         // In split view a portrait waits for the next image: another portrait pairs with it,
         // anything else is shown alone in its place.
         if (waitsForPortraitPair(first, spec.layout)) {
-            val next = Helpers.prepareImage(fetchImage(api, includeVideos))
+            val next = fetchImage(api, includeVideos)
             if (waitsForPortraitPair(next, spec.layout)) second = next else first = next
         }
         val frame = renderSlide(spec, first, second)
-        val shown = second ?: first
-        // A video poster is not cached for offline startup.
-        return BuiltSlide(frame, shown.response, shown.takeUnless { it.response.isVideo }, spec, token)
+        return BuiltSlide(frame, second ?: first, spec, token)
     }
 
     private fun waitsForPortraitPair(image: Helpers.PreparedImage, layout: String): Boolean =
@@ -601,10 +598,21 @@ class MainActivity : AppCompatActivity() {
             image.height > image.width, layout, allowPortraitPair = !image.response.isVideo,
         )
 
-    private suspend fun fetchImage(api: Helpers.ApiService, includeVideos: Boolean): Helpers.ImageResponse {
-        val response = api.getImageData(includeVideos).awaitResponse()
+    /**
+     * Fetches the next image's metadata, then its raw preview bytes. Older servers ignore
+     * includeImage and inline the image as Base64, which is still accepted.
+     */
+    private suspend fun fetchImage(api: Helpers.ApiService, includeVideos: Boolean): Helpers.PreparedImage {
+        val response = api.getImageData(includeVideos, includeImage = false).awaitResponse()
         if (!response.isSuccessful) throw IOException("HTTP ${response.code()}: ${response.message()}")
-        return response.body() ?: throw IOException("Empty image response")
+        val info = response.body() ?: throw IOException("Empty image response")
+        if (info.hasInlineImage) return Helpers.prepareImage(info)
+        val assetId = info.assetId?.takeIf(String::isNotBlank)
+            ?: throw IOException("Image response has neither an image nor an asset id")
+        val image = api.getAssetBytes(assetId, "IMAGE").awaitResponse()
+        if (!image.isSuccessful) throw IOException("HTTP ${image.code()} for image $assetId")
+        val bytes = image.body()?.use { it.bytes() } ?: throw IOException("Empty image body for $assetId")
+        return Helpers.prepareImage(info, bytes)
     }
 
     private fun presentSlide(slide: BuiltSlide, token: Long) {
@@ -615,15 +623,17 @@ class MainActivity : AppCompatActivity() {
         ++imageGeneration
         imageJob?.cancel()
         imageJob = null
-        val isVideo = slide.response.isVideo
+        val isVideo = slide.image.response.isVideo
         updateUI(slide.frame, zoomEnabled = serverSettings.imageZoom && !isVideo)
-        if (isVideo) startVideo(slide.response, token)
+        if (isVideo) startVideo(slide.image.response, token)
         setOfflineIndicator(false)
         previousImage = currentImage
-        currentImage = slide.response
+        currentImage = slide.image
         imageRetryMillis = 5_000L
-        slide.persist?.let { prepared ->
-            lifecycleScope.launch(Dispatchers.IO) { CachedImageStore.writeIfStale(applicationContext, prepared) }
+        // A video poster is not cached for offline startup.
+        if (!isVideo) {
+            val image = slide.image
+            lifecycleScope.launch(Dispatchers.IO) { CachedImageStore.writeIfStale(applicationContext, image) }
         }
         schedulePrefetch()
     }
@@ -1036,7 +1046,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startPlaybackAfterSettingsLoaded() {
-        val cachedImage = currentImage ?: CachedImageStore.read(applicationContext)
+        val cachedImage = currentImage ?: CachedImageStore.readPrepared(applicationContext)
         if (cachedImage != null) {
             val token = nativeSessionToken
             // A lone cached portrait must be usable with no backend available. showImage also

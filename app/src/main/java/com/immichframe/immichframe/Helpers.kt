@@ -8,7 +8,9 @@ import android.graphics.Paint
 import android.util.Base64
 import retrofit2.Call
 import retrofit2.http.GET
+import retrofit2.http.Path
 import retrofit2.http.Query
+import okhttp3.ResponseBody
 import androidx.core.graphics.scale
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -133,6 +135,9 @@ object Helpers {
         val durationSeconds: Double? = null,
     ) {
         val isVideo: Boolean get() = assetType == ASSET_TYPE_VIDEO && !assetId.isNullOrBlank()
+
+        /** False when the client asked to fetch the image bytes separately and the server agreed. */
+        val hasInlineImage: Boolean get() = randomImageBase64.isNotEmpty()
     }
 
     // Immich AssetTypeEnum ordinal as serialized by the ImmichFrame server.
@@ -154,8 +159,10 @@ object Helpers {
         val height: Int,
     )
 
-    fun prepareImage(response: ImageResponse): PreparedImage {
-        val bytes = Base64.decode(response.randomImageBase64, Base64.DEFAULT)
+    fun prepareImage(response: ImageResponse): PreparedImage =
+        prepareImage(response, Base64.decode(response.randomImageBase64, Base64.DEFAULT))
+
+    fun prepareImage(response: ImageResponse, bytes: ByteArray): PreparedImage {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Invalid image payload" }
@@ -217,8 +224,16 @@ object Helpers {
     )
 
     interface ApiService {
+        /** With includeImage=false a supporting server omits the Base64 image; see [getAssetBytes]. */
         @GET("api/Asset/RandomImageAndInfo")
-        fun getImageData(@Query("includeVideos") includeVideos: Boolean): Call<ImageResponse>
+        fun getImageData(
+            @Query("includeVideos") includeVideos: Boolean,
+            @Query("includeImage") includeImage: Boolean,
+        ): Call<ImageResponse>
+
+        /** The raw preview bytes (a video's poster) for [ImageResponse.assetId] with assetType IMAGE. */
+        @GET("api/Asset/{id}/Asset")
+        fun getAssetBytes(@Path("id") id: String, @Query("assetType") assetType: String): Call<ResponseBody>
 
         @GET("api/Config")
         fun getServerSettings(): Call<ServerSettings>
