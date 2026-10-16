@@ -3,6 +3,7 @@ package com.immichframe.immichframe
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -898,9 +899,12 @@ class MainActivity : AppCompatActivity() {
                 ): Boolean {
                     val url = request?.url
                     if (url != null) {
-                        // Open the URL in the default browser
-                        val intent = Intent(Intent.ACTION_VIEW, url)
-                        startActivity(intent)
+                        // Open the URL in the default browser; frames often have none.
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, url))
+                        } catch (error: ActivityNotFoundException) {
+                            Log.w("WebView", "No app can open $url")
+                        }
                         return true
                     }
                     return false
@@ -921,18 +925,20 @@ class MainActivity : AppCompatActivity() {
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
                         }, 500)
+                        // Only a failed page load is retried; a failed image or favicon would
+                        // otherwise reload the whole page every 5 seconds.
+                        handler.postDelayed({
+                            //check url again in case the user has changed it
+                            val currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
+                            if (currentUrl.isNotEmpty()) {
+                                activeWebView.loadUrl(
+                                    currentUrl,
+                                    if (authSecret.isBlank()) emptyMap()
+                                    else mapOf("Authorization" to "Bearer $authSecret"),
+                                )
+                            }
+                        }, 5000)
                     }
-                    handler.postDelayed({
-                        //check url again in case the user has changed it
-                        val currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
-                        if (currentUrl.isNotEmpty()) {
-                            activeWebView.loadUrl(
-                                currentUrl,
-                                if (authSecret.isBlank()) emptyMap()
-                                else mapOf("Authorization" to "Bearer $authSecret"),
-                            )
-                        }
-                    }, 5000)
                 }
             }
             activeWebView.settings.javaScriptEnabled = true

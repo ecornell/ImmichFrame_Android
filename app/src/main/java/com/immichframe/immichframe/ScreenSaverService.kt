@@ -1,13 +1,13 @@
 package com.immichframe.immichframe
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.service.dreams.DreamService
 import android.text.SpannableString
 import android.text.Spanned
@@ -46,7 +46,6 @@ import androidx.core.graphics.toColorInt
 
 class ScreenSaverService : DreamService() {
     private var webViewRetryScope: CoroutineScope? = null
-    private var wakeLock: PowerManager.WakeLock? = null
     private var webView: WebView? = null
     private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
@@ -124,7 +123,6 @@ class ScreenSaverService : DreamService() {
         txtDateTime = findViewById(R.id.txtDateTime)
         txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
 
-        acquireWakeLock()
         loadSettings()
     }
 
@@ -135,7 +133,6 @@ class ScreenSaverService : DreamService() {
         webViewRetryScope?.cancel()
         webViewRetryScope = null
         destroyWebView()
-        releaseWakeLock()
         handler.removeCallbacksAndMessages(null)
     }
 
@@ -384,13 +381,10 @@ class ScreenSaverService : DreamService() {
                         scheduleImageRetry()
                     }
                 } else {
+                    // The offline indicator already shows this; a toast every retry would not stop.
+                    Log.w("ScreenSaver", "Failed to load image (HTTP ${response.code()})")
                     setOfflineIndicator(true)
                     scheduleImageRetry()
-                    Toast.makeText(
-                        applicationContext,
-                        "Failed to load image (HTTP ${response.code()})",
-                        Toast.LENGTH_SHORT
-                    ).show()
                 }
             }
 
@@ -590,9 +584,14 @@ class ScreenSaverService : DreamService() {
                 ): Boolean {
                     val url = request?.url
                     if (url != null) {
-                        // Open the URL in the default browser
-                        val intent = Intent(Intent.ACTION_VIEW, url)
-                        startActivity(intent)
+                        // Open the URL in the default browser. A service needs a new task, and
+                        // frames often have no browser at all.
+                        val intent = Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try {
+                            startActivity(intent)
+                        } catch (error: ActivityNotFoundException) {
+                            Log.w("ScreenSaver", "No app can open $url")
+                        }
                         return true
                     }
                     return false
@@ -613,10 +612,12 @@ class ScreenSaverService : DreamService() {
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
                         }, 500)
+                        // Only a failed page load is retried; a failed image or favicon would
+                        // otherwise reload the whole page every 5 seconds.
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
+                        }, 5000)
                     }
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
-                    }, 5000)
                 }
             }
             activeWebView.settings.javaScriptEnabled = true
@@ -737,7 +738,23 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun startPlaybackAfterSettingsLoaded() {
-        val cachedImage = currentImage ?: CachedImageStore.read(applicationContext)
+        val current = currentImage
+        val scope = webViewRetryScope
+        if (current != null || scope == null) {
+            showStartupImage(current)
+        } else {
+            // The cached image is up to 24 MB; read it off the main thread.
+            val token = nativeSessionToken
+            scope.launch {
+                val cached = withContext(Dispatchers.IO) { CachedImageStore.read(applicationContext) }
+                if (playbackSession.isCurrent(token) && currentImage == null) showStartupImage(cached)
+            }
+        }
+        startImageTimer()
+        updateWeatherTimer()
+    }
+
+    private fun showStartupImage(cachedImage: Helpers.ImageResponse?) {
         if (cachedImage != null) {
             val token = nativeSessionToken
             showImage(
@@ -757,31 +774,10 @@ class ScreenSaverService : DreamService() {
         } else {
             getNextImage()
         }
-        startImageTimer()
-        updateWeatherTimer()
     }
 
     private fun updateWeatherTimer() {
         if (serverSettings.showWeatherDescription) weatherTimer.start(0L) else stopWeatherTimer()
-    }
-
-    private fun acquireWakeLock() {
-        if (wakeLock == null) {
-            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, "ImmichFrame::ScreenSaverWakeLock"
-            )
-            wakeLock?.acquire(120 * 60 * 1000L)
-        }
-    }
-
-    private fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-            }
-        }
-        wakeLock = null
     }
 
     private fun loadWebViewWithRetry(

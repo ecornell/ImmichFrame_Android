@@ -80,9 +80,14 @@ internal object CachedImageStore {
     }
 
     /** Reads the cached image without re-encoding its bytes; null if missing or undecodable. */
-    fun readPrepared(context: Context): Helpers.PreparedImage? = synchronized(lock) {
-        readBinaryPrepared(File(context.filesDir, FILE_NAME))
-    } ?: read(context)?.let { legacy -> runCatching { Helpers.prepareImage(legacy) }.getOrNull() }
+    fun readPrepared(context: Context): Helpers.PreparedImage? {
+        val parts = synchronized(lock) { readBinaryParts(File(context.filesDir, FILE_NAME)) }
+        // A binary entry that fails to decode is not retried through the Base64 path, which
+        // would re-read and re-encode up to 24 MB only to fail the same way.
+        if (parts != null) return preparedFrom(parts)
+        val legacy = synchronized(lock) { readLegacy(File(context.filesDir, LEGACY_FILE_NAME)) }
+        return legacy?.let { runCatching { Helpers.prepareImage(it) }.getOrNull() }
+    }
 
     fun read(context: Context): Helpers.ImageResponse? = synchronized(lock) {
         readBinary(File(context.filesDir, FILE_NAME))
@@ -98,7 +103,7 @@ internal object CachedImageStore {
         )
     }
 
-    private fun readBinaryPrepared(file: File): Helpers.PreparedImage? = readBinaryParts(file)?.let { parts ->
+    private fun preparedFrom(parts: Parts): Helpers.PreparedImage? =
         runCatching {
             Helpers.prepareImage(
                 Helpers.ImageResponse(
@@ -110,7 +115,6 @@ internal object CachedImageStore {
                 parts.image,
             )
         }.getOrNull()
-    }
 
     private class Parts(val date: String, val location: String, val thumb: ByteArray, val image: ByteArray)
 
