@@ -126,7 +126,9 @@
             android:layout_gravity="center_vertical|start"
             android:layout_marginStart="8dp"
             android:background="@null"
-            android:visibility="gone" />
+            android:defaultFocusHighlightEnabled="false"
+            android:visibility="gone"
+            tools:targetApi="o" />
 
         <View
             android:id="@+id/btnPause"
@@ -134,7 +136,9 @@
             android:layout_height="125dp"
             android:layout_gravity="center"
             android:background="@null"
-            android:visibility="gone" />
+            android:defaultFocusHighlightEnabled="false"
+            android:visibility="gone"
+            tools:targetApi="o" />
 
         <View
             android:id="@+id/btnNext"
@@ -143,7 +147,9 @@
             android:layout_gravity="center_vertical|end"
             android:layout_marginEnd="8dp"
             android:background="@null"
-            android:visibility="gone" />
+            android:defaultFocusHighlightEnabled="false"
+            android:visibility="gone"
+            tools:targetApi="o" />
 
         <View
             android:id="@+id/dimOverlay"
