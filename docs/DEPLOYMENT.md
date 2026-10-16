@@ -4,6 +4,32 @@ This runbook covers repeatable in-place deployment of the debug package to autho
 frames. It preserves application data and restores ImmichFrame as Android HOME after package
 replacement.
 
+## Build types
+
+`prepare-deployment.sh` takes `BUILD_TYPE=debug` (default) or `BUILD_TYPE=frame`:
+
+- `debug`: the unoptimized, debuggable build. `run-as`, `am profile`, and app-data inspection
+  work, so use it for on-device diagnosis.
+- `frame`: inherits the release configuration (R8 minify, not debuggable) but keeps the `.debug`
+  application ID and is signed with the build machine's debug key, the same identity as the
+  installed builds. It upgrades frames in place, keeping settings and the HOME role, and any
+  older debug build remains a valid rollback. Because it is not debuggable, `adb run-as` can no
+  longer read the stored server secret, RPC token, or MQTT password. The APK is about a quarter of
+  the debug size.
+
+The build machine's `~/.android/debug.keystore` is effectively the frames' signing key. Back it up;
+a build signed with a different keystore cannot upgrade the frames, and the signer checks in these
+scripts reject it.
+
+```bash
+BUILD_TYPE=frame scripts/prepare-deployment.sh \
+  /mnt/c/Users/USER/AppData/Local/Temp/ImmichFrame-debug.apk \
+  /path/to/previous-signed-ImmichFrame.apk
+cat app/build/outputs/apk/frame/deployment-metadata.json
+```
+
+Switching between `debug` and `frame` builds still needs a new `versionCode`, as below.
+
 ## 1. Preflight
 
 1. Start from a clean, committed source tree: `git status --short` must be empty.

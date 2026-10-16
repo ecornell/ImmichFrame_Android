@@ -33,5 +33,5 @@ fi
 if (($#)); then
   exec bash gradlew "$@"
 else
-  exec bash gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
+  exec bash gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleFrame
 fi

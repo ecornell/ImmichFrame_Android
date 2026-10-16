@@ -59,6 +59,18 @@ android {
                 null
             }
         }
+        // Optimized, non-debuggable build for the dedicated frames. Deployed frames run the
+        // .debug package signed with the build machine's debug key; keeping both lets this build
+        // upgrade them in place with their settings and HOME role intact, and keeps the existing
+        // debug builds valid rollbacks. That debug keystore is therefore the frames' release key.
+        create("frame") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-frame"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            manifestPlaceholders["appLabel"] = "ImmichFrame"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

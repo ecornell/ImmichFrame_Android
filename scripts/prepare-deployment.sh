@@ -5,9 +5,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 destination="${1:-}"
 rollback_apk="${2:-}"
 if [[ -z "$destination" ]]; then
-  echo "Usage: scripts/prepare-deployment.sh <destination-apk-path> [rollback-apk-path]" >&2
+  echo "Usage: [BUILD_TYPE=debug|frame] scripts/prepare-deployment.sh <destination-apk-path> [rollback-apk-path]" >&2
   exit 2
 fi
+# "frame" is the minified, non-debuggable build with the same package and signer as "debug".
+build_type="${BUILD_TYPE:-debug}"
+case "$build_type" in
+  debug) validation_tasks=(testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest) ;;
+  frame) validation_tasks=(testDebugUnitTest lintDebug assembleDebugAndroidTest assembleFrame) ;;
+  *) echo "BUILD_TYPE must be debug or frame, not '$build_type'" >&2; exit 2 ;;
+esac
 
 cd "$repo_root"
 if [[ -n "$(git status --short)" ]]; then
@@ -15,14 +22,14 @@ if [[ -n "$(git status --short)" ]]; then
   exit 1
 fi
 
-scripts/validate.sh
+scripts/validate.sh "${validation_tasks[@]}"
 
 sdk="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export JAVA_HOME="${JAVA_HOME:-$HOME/.local/share/jdks/temurin-17}"
 export PATH="$JAVA_HOME/bin:$PATH"
 apkanalyzer="$(python3 scripts/resolve-android-tools.py --sdk "$sdk" --get apkanalyzer)"
 apksigner="$(python3 scripts/resolve-android-tools.py --sdk "$sdk" --get apksigner)"
-apk="app/build/outputs/apk/debug/app-debug.apk"
+apk="app/build/outputs/apk/$build_type/app-$build_type.apk"
 [[ -f "$apkanalyzer" ]] || { echo "Missing $apkanalyzer" >&2; exit 1; }
 [[ -f "$apksigner" ]] || { echo "Missing $apksigner" >&2; exit 1; }
 
@@ -43,7 +50,7 @@ cp -f "$apk" "$destination"
 copied_sha256="$(sha256sum "$destination" | awk '{print $1}')"
 [[ "$copied_sha256" == "$apk_sha256" ]] || { echo "Copied APK hash mismatch" >&2; exit 1; }
 
-metadata="app/build/outputs/apk/debug/deployment-metadata.json"
+metadata="app/build/outputs/apk/$build_type/deployment-metadata.json"
 rollback_json='null'
 if [[ -n "$rollback_apk" ]]; then
   [[ -f "$rollback_apk" ]] || { echo "Rollback APK was not found: $rollback_apk" >&2; exit 1; }
@@ -70,10 +77,10 @@ PY
 )"
 fi
 
-python - "$metadata" "$application_id" "$version_code" "$version_name" "$apk_sha256" "$signer_sha256" "$(git rev-parse HEAD)" "$destination" "$release_id" "$rollback_json" <<'PY'
+python - "$metadata" "$application_id" "$version_code" "$version_name" "$apk_sha256" "$signer_sha256" "$(git rev-parse HEAD)" "$destination" "$release_id" "$rollback_json" "${validation_tasks[*]}" <<'PY'
 import json, sys
 from datetime import datetime, timezone
-path, app_id, code, name, apk_hash, signer, commit, destination, release_id, rollback = sys.argv[1:]
+path, app_id, code, name, apk_hash, signer, commit, destination, release_id, rollback, tasks = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as out:
     json.dump({
         "schemaVersion": 1,
@@ -86,7 +93,7 @@ with open(path, "w", encoding="utf-8") as out:
         "signerSha256": signer,
         "sourceCommit": commit,
         "copiedTo": destination,
-        "validation": {"status": "passed", "commands": ["testDebugUnitTest", "lintDebug", "assembleDebug"]},
+        "validation": {"status": "passed", "commands": tasks.split()},
         "rollback": json.loads(rollback),
     }, out, indent=2)
     out.write("\n")

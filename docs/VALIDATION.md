@@ -3,8 +3,12 @@
 Run the host checks, unit/integration tests, Android lint, and all validation APK builds with:
 
 ```bash
-bash scripts/validate.sh testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease
+bash scripts/validate.sh testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease assembleFrame
 ```
+
+`assembleFrame` builds the R8-minified, non-debuggable `frame` variant that frames run (see
+`docs/DEPLOYMENT.md`). Unit tests and lint still run against the debug variant, so the frame build
+must also be exercised on a device: R8 problems such as stripped reflection only appear at runtime.
 
 The script selects the local JDK/SDK defaults documented in the README. It also runs Python
 operational tests and Pester deployment tests when PowerShell/Pester is available. Deployment

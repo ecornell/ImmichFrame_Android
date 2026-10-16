@@ -21,3 +21,9 @@
 #-renamesourcefileattribute SourceFile
 -keep class retrofit2.** { *; }
 -keep class com.immichframe.immichframe.** { *; }
+
+# Paho finds its network modules through ServiceLoader and its logger by class name.
+-keep class org.eclipse.paho.client.mqttv3.** { *; }
+-dontwarn org.eclipse.paho.client.mqttv3.**
+# Keep line numbers so crash stack traces from the minified frame build stay readable.
+-keepattributes SourceFile,LineNumberTable

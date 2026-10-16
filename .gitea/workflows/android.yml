@@ -37,7 +37,7 @@ jobs:
           bash gradlew --no-daemon --max-workers=1
           -Dorg.gradle.jvmargs="-Xmx1024m -Dfile.encoding=UTF-8"
           -Pkotlin.compiler.execution.strategy=in-process
-          testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease
+          testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease assembleFrame
       - uses: actions/upload-artifact@v3
         if: always()
         with:
