@@ -349,8 +349,9 @@ class MainActivity : AppCompatActivity() {
                 if (error is CancellationException) throw error
                 withContext(Dispatchers.Main) {
                     if (generation == imageGeneration && playbackSession.isCurrent(token)) {
+                        // A local render failure (such as a corrupt cached image) says nothing about
+                        // the server, so it does not raise the offline indicator.
                         Log.e("NativeFrame", "Unable to render image; retaining the current frame", error)
-                        setOfflineIndicator(true)
                         scheduleImageRetry()
                     }
                 }
@@ -675,12 +676,12 @@ class MainActivity : AppCompatActivity() {
         imageRetryMillis = (imageRetryMillis * 2).coerceAtMost(5 * 60_000L)
     }
 
-    private fun setOfflineIndicator(offline: Boolean) {
+    private fun setOfflineIndicator(offline: Boolean, imageSucceeded: Boolean = !offline) {
         remoteState.update {
             it.copy(
                 serverConnected = !offline,
                 offlineFallback = offline && currentImage != null,
-                lastImageSuccessMillis = if (offline) it.lastImageSuccessMillis else System.currentTimeMillis(),
+                lastImageSuccessMillis = if (imageSucceeded) System.currentTimeMillis() else it.lastImageSuccessMillis,
             )
         }
         if (!::txtOfflineIndicator.isInitialized) return
@@ -886,7 +887,10 @@ class MainActivity : AppCompatActivity() {
         } else {
             handler.removeCallbacks(activeCheckRunnable)
             if (isFrameInactive != false) {
+                // setFrameActive loads the settings itself (after any dim fade); continuing here
+                // would start a second playback session.
                 setFrameActive(true)
+                return
             }
         }
         if (useWebView) {
@@ -969,6 +973,8 @@ class MainActivity : AppCompatActivity() {
             getServerSettings(
                 onSuccess = { settings ->
                     if (isFrameInactive != true) {
+                        // The server answered, so clear the indicator raised for the cached frame.
+                        setOfflineIndicator(false, imageSucceeded = false)
                         if (applyServerSettings(settings)) {
                             CachedServerSettingsStore.write(applicationContext, settings)
                         }
