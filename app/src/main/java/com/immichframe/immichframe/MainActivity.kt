@@ -1,9 +1,7 @@
 package com.immichframe.immichframe
 
 import android.annotation.SuppressLint
-import android.app.AlarmManager
 import android.app.KeyguardManager
-import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -93,15 +91,20 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { setFrameActive(active) }
             }
 
-            override fun setPaused(paused: Boolean) {
-                val current = remoteState.snapshot().paused
-                if (current == paused) return
-                remoteState.update { it.copy(paused = paused) }
-                runOnUiThread { pauseAction() }
+            override fun setPaused(paused: Boolean) = runOnUiThread {
+                if (useWebView) {
+                    // The web page's pause state is not observable; track the last request.
+                    if (remoteState.snapshot().paused == paused) return@runOnUiThread
+                    pauseAction()
+                    remoteState.update { it.copy(paused = paused) }
+                } else if (paused == isImageTimerRunning) {
+                    // Native playback is paused exactly when its timer is stopped.
+                    pauseAction()
+                }
             }
 
             override fun togglePaused() {
-                setPaused(!remoteState.snapshot().paused)
+                runOnUiThread { setPaused(if (useWebView) !remoteState.snapshot().paused else isImageTimerRunning) }
             }
 
             override fun setBrightness(brightness: Float?) {
@@ -122,7 +125,7 @@ class MainActivity : AppCompatActivity() {
     private var imageJob: Job? = null
     private val playbackSession = PlaybackSession()
     private var nativeSessionToken = 0L
-    @Volatile private var imageGeneration = 0L
+    private var imageGeneration = 0L
     private var imageRetryMillis = 5_000L
     private var useWebView = true
     private var nativeVideos = true
@@ -213,6 +216,8 @@ class MainActivity : AppCompatActivity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.main_view)
+        // The root layout paints black over the whole window; skip a second full-screen fill.
+        window.setBackgroundDrawable(null)
         hideSystemUI()
 
         // Clean up settings of the removed Screen Dimming feature (replaced by Active Times)
@@ -228,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         webViewContainer = findViewById(R.id.webViewContainer)
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
-        framePresenter = NativeFramePresenter(imageView1, imageView2, handler)
+        framePresenter = NativeFramePresenter(imageView1, imageView2)
         videoView = findViewById(R.id.videoView)
         videoPlayer = NativeVideoPlayer(applicationContext, videoView)
         photoInfoContainer = findViewById(R.id.photoInfoContainer)
@@ -323,7 +328,7 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        imageJob = lifecycleScope.launch(Dispatchers.IO) {
+        imageJob = lifecycleScope.launch(slideDispatcher) {
             var rendered: RenderedFrame? = null
             var handedOff = false
             try {
@@ -334,7 +339,7 @@ class MainActivity : AppCompatActivity() {
                     ) {
                         updateUI(rendered, zoomEnabled = serverSettings.imageZoom && !isVideo)
                         handedOff = true
-                        if (isVideo && playVideo) startVideo(imageResponse, token)
+                        if (isVideo && playVideo) startVideo(imageResponse, token) else imageTimer.reschedule()
                         afterPresented?.invoke()
                     }
                 }
@@ -494,7 +499,9 @@ class MainActivity : AppCompatActivity() {
         ) return
         val spec = currentSlideSpec()
         if (spec == null) {
-            window.decorView.doOnNextLayout { if (playbackSession.isCurrent(token)) getNextImage() }
+            window.decorView.doOnNextLayout {
+                if (playbackSession.isCurrent(token) && isImageTimerRunning) getNextImage()
+            }
             return
         }
         when (val advance = nextSlides.advance { it.token == token && it.spec == spec }) {
@@ -531,10 +538,9 @@ class MainActivity : AppCompatActivity() {
         val api = apiService
         val includeVideos = nativeVideos
         slideJob = lifecycleScope.launch(slideDispatcher) {
-            // A prefetch is not latency-critical; keep it from competing with frame rendering.
-            Process.setThreadPriority(
-                if (prefetch) Process.THREAD_PRIORITY_BACKGROUND else Process.THREAD_PRIORITY_DEFAULT,
-            )
+            // A prefetch is not latency-critical, so it yields to frame rendering. It stays out of
+            // the background cgroup, where a build that playback ends up waiting on would be throttled.
+            Process.setThreadPriority(if (prefetch) PREFETCH_THREAD_PRIORITY else Process.THREAD_PRIORITY_DEFAULT)
             var built: BuiltSlide? = null
             try {
                 built = fetchAndRenderSlide(api, includeVideos, spec, token)
@@ -626,6 +632,8 @@ class MainActivity : AppCompatActivity() {
         val isVideo = slide.image.response.isVideo
         updateUI(slide.frame, zoomEnabled = serverSettings.imageZoom && !isVideo)
         if (isVideo) startVideo(slide.image.response, token)
+        // The timer counted from when this slide was requested; a late build would cut it short.
+        if (!isVideo) imageTimer.reschedule()
         setOfflineIndicator(false)
         previousImage = currentImage
         currentImage = slide.image
@@ -694,10 +702,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun startImageTimer() {
         imageTimer.start()
+        remoteState.update { it.copy(paused = false) }
     }
 
     private fun stopImageTimer() {
         imageTimer.stop()
+        if (!useWebView) remoteState.update { it.copy(paused = true) }
         ++imageGeneration
         if (::framePresenter.isInitialized) framePresenter.pauseZoom()
         if (::videoPlayer.isInitialized) videoPlayer.pause()
@@ -915,12 +925,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     handler.postDelayed({
                         //check url again in case the user has changed it
-                        var currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
-                        currentUrl = if (authSecret.isNotEmpty()) {
-                            currentUrl
-                        } else {
-                            currentUrl
-                        }
+                        val currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
                         if (currentUrl.isNotEmpty()) {
                             activeWebView.loadUrl(
                                 currentUrl,
@@ -936,6 +941,11 @@ class MainActivity : AppCompatActivity() {
             activeWebView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
+            if (!Helpers.isValidServerUrl(savedUrl)) {
+                Toast.makeText(this, "Invalid server URL: $savedUrl", Toast.LENGTH_LONG).show()
+                settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
+                return
+            }
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
             destroyWebView()
@@ -1126,7 +1136,7 @@ class MainActivity : AppCompatActivity() {
                 getNextImage()
             }
         }
-        remoteState.update { it.copy(paused = !isImageTimerRunning) }
+        if (!useWebView) remoteState.update { it.copy(paused = !isImageTimerRunning) }
     }
 
     private fun settingsAction(authorizedOverride: Boolean = false) {
@@ -1383,18 +1393,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun wakeAlarmPendingIntent(): PendingIntent {
-        val intent = Intent(this, ScheduleWakeReceiver::class.java).apply {
-            action = ScheduleWakeReceiver.ACTION_WAKE
-        }
-        return PendingIntent.getBroadcast(
-            this,
-            ScheduleWakeReceiver.REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
     private fun scheduleWakeAlarm() {
         FrameScheduleManager.schedule(applicationContext)
     }
@@ -1608,6 +1606,7 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val PREFETCH_AFTER_TRANSITION_MILLIS = 250L
+        const val PREFETCH_THREAD_PRIORITY = Process.THREAD_PRIORITY_DEFAULT + 4 * Process.THREAD_PRIORITY_LESS_FAVORABLE
 
         /** A single thread builds slides, so a prefetch never runs two decodes at once. */
         val slideDispatcher = Executors.newSingleThreadExecutor { runnable ->

@@ -116,7 +116,7 @@ class ScreenSaverService : DreamService() {
         webViewContainer = findViewById(R.id.webViewContainer)
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
-        framePresenter = NativeFramePresenter(imageView1, imageView2, handler)
+        framePresenter = NativeFramePresenter(imageView1, imageView2)
         photoInfoContainer = findViewById(R.id.photoInfoContainer)
         txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
         txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
@@ -624,6 +624,12 @@ class ScreenSaverService : DreamService() {
             activeWebView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
         } else {
+            if (!Helpers.isValidServerUrl(savedUrl)) {
+                // A dream cannot open settings; end it rather than crash the shared process.
+                Log.w("ScreenSaver", "Invalid server URL; ending the screensaver")
+                finish()
+                return
+            }
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
             destroyWebView()

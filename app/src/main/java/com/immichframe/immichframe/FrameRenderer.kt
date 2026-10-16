@@ -133,6 +133,9 @@ internal object FrameRenderer {
             scale,
             second != null,
         )
+        // Start the GPU texture upload now (asynchronous on API 24+) so the first crossfade
+        // frame does not have to upload a full-screen bitmap.
+        output.prepareToDraw()
         return RenderedFrame(
             output,
             FrameMeta(first.response.photoDate, first.response.imageLocation),

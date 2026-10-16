@@ -13,6 +13,7 @@ import retrofit2.http.Query
 import okhttp3.ResponseBody
 import androidx.core.graphics.scale
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -241,6 +242,9 @@ object Helpers {
         @GET("api/Weather")
         fun getWeather(): Call<Weather>
     }
+
+    /** Retrofit throws on a base URL without an http(s) scheme and host, e.g. "192.168.1.5:8080". */
+    fun isValidServerUrl(url: String): Boolean = url.toHttpUrlOrNull() != null
 
     fun createRetrofit(baseUrl: String, authSecret: String): Retrofit {
         val normalizedBaseUrl = if (!baseUrl.endsWith("/")) "$baseUrl/" else baseUrl

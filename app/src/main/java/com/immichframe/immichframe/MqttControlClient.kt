@@ -10,6 +10,9 @@ import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 internal data class MqttSettings(
     val brokerUri: String,
@@ -103,6 +106,10 @@ internal class MqttControlClient(
 ) {
     private var client: MqttAsyncClient? = null
     @Volatile private var running = false
+    // Paho's automatic reconnect only applies after a first successful connection; a frame that
+    // boots before Wi-Fi or the broker is up retries its first connection here instead.
+    private var retryExecutor: ScheduledExecutorService? = null
+    private var retryDelayMillis = INITIAL_RETRY_MILLIS
     private val stateListener: (RemoteFrameState) -> Unit = { publishState(it) }
 
     fun start(): Boolean {
@@ -146,15 +153,15 @@ internal class MqttControlClient(
                 setWill("${settings.baseTopic}/availability", "offline".toByteArray(), 1, true)
             }
             state.addListener(stateListener)
-            mqtt.connect(options, null, object : IMqttActionListener {
-                override fun onSuccess(asyncActionToken: org.eclipse.paho.client.mqttv3.IMqttToken?) = Unit
-                override fun onFailure(asyncActionToken: org.eclipse.paho.client.mqttv3.IMqttToken?, exception: Throwable?) {
-                    Log.w(TAG, "MQTT connection failed: ${exception?.message}")
-                }
-            })
+            retryExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "ImmichFrame-mqtt-retry").apply { isDaemon = true }
+            }
+            connect(mqtt, options)
             return true
         } catch (e: Exception) {
             running = false
+            retryExecutor?.shutdownNow()
+            retryExecutor = null
             state.removeListener(stateListener)
             client?.let { failedClient ->
                 runCatching { failedClient.disconnectForcibly(250, 250, false) }
@@ -166,8 +173,39 @@ internal class MqttControlClient(
         }
     }
 
+    private fun connect(mqtt: MqttAsyncClient, options: MqttConnectOptions) {
+        mqtt.connect(options, null, object : IMqttActionListener {
+            override fun onSuccess(asyncActionToken: org.eclipse.paho.client.mqttv3.IMqttToken?) {
+                retryDelayMillis = INITIAL_RETRY_MILLIS
+            }
+
+            override fun onFailure(asyncActionToken: org.eclipse.paho.client.mqttv3.IMqttToken?, exception: Throwable?) {
+                Log.w(TAG, "MQTT connection failed: ${exception?.message}")
+                scheduleRetry(mqtt, options)
+            }
+        })
+    }
+
+    private fun scheduleRetry(mqtt: MqttAsyncClient, options: MqttConnectOptions) {
+        if (!running || client !== mqtt) return
+        val delay = retryDelayMillis
+        retryDelayMillis = (delay * 2).coerceAtMost(MAX_RETRY_MILLIS)
+        runCatching {
+            retryExecutor?.schedule({
+                if (running && client === mqtt && !mqtt.isConnected) {
+                    runCatching { connect(mqtt, options) }.onFailure {
+                        Log.w(TAG, "MQTT reconnect attempt failed: ${it.message}")
+                        scheduleRetry(mqtt, options)
+                    }
+                }
+            }, delay, TimeUnit.MILLISECONDS)
+        }
+    }
+
     fun stop() {
         running = false
+        retryExecutor?.shutdownNow()
+        retryExecutor = null
         state.removeListener(stateListener)
         val mqtt = client ?: return
         client = null
@@ -246,5 +284,9 @@ internal class MqttControlClient(
         }
     }
 
-    companion object { private const val TAG = "MqttControlClient" }
+    companion object {
+        private const val TAG = "MqttControlClient"
+        private const val INITIAL_RETRY_MILLIS = 5_000L
+        private const val MAX_RETRY_MILLIS = 120_000L
+    }
 }

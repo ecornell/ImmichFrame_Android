@@ -25,4 +25,11 @@ class ImageResponseTest {
         )
         assertTrue(response.hasInlineImage)
     }
+
+    @Test fun serverUrlsWithoutASchemeAreRejectedInsteadOfCrashing() {
+        assertTrue(Helpers.isValidServerUrl("http://192.168.1.24:8080"))
+        assertTrue(Helpers.isValidServerUrl("https://frame.example/sub/"))
+        assertFalse(Helpers.isValidServerUrl("192.168.1.24:8080"))
+        assertFalse(Helpers.isValidServerUrl(""))
+    }
 }

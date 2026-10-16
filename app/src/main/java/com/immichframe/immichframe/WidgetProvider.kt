@@ -85,11 +85,17 @@ class WidgetProvider : AppWidgetProvider() {
                         getNextImage(apiService) { imageResponse ->
                             imageResponse?.let {
                                 CoroutineScope(Dispatchers.IO).launch {
-                                    var randomBitmap =
-                                        Helpers.decodeBitmapFromBytes(it.randomImageBase64)
-
-                                    //randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize)
-                                    randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, 1000)
+                                    // The widget shares the frame's process, so a bad payload
+                                    // must not throw out of this coroutine.
+                                    val randomBitmap = runCatching {
+                                        Helpers.reduceBitmapQuality(
+                                            Helpers.decodeBitmapFromBytes(it.randomImageBase64, 1000),
+                                            1000,
+                                        )
+                                    }.getOrElse { error ->
+                                        Log.e("WidgetDebug", "Unable to decode widget image", error)
+                                        return@launch
+                                    }
 
                                     withContext(Dispatchers.Main) {
                                         views.setImageViewBitmap(
