@@ -134,17 +134,29 @@ class SettingsFragment : PreferenceFragmentCompat() {
         chkSettingsLock?.setOnPreferenceChangeListener { _, newValue ->
             val enabling = newValue as Boolean
             if (enabling) {
+                // RPC is the only way back into a locked settings screen; without it the lock
+                // can only be undone by reinstalling.
+                val rpcEnabled = PreferenceManager.getDefaultSharedPreferences(requireContext())
+                    .getBoolean("rpcEnabled", false)
+                if (!rpcEnabled || rpcTokenPref?.text.isNullOrBlank()) {
+                    Toast.makeText(
+                        requireContext(),
+                        "Enable Authenticated Remote Control first; it is the only way to unlock settings.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    return@setOnPreferenceChangeListener false
+                }
+                var confirmed = false
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle("Confirm Action")
                     .setMessage(
                         "This will disable access to the settings screen, the only way back is via RPC commands (or uninstall/reinstall).\n" +
                                 "Are you absolutely sure?"
                     )
-                    .setPositiveButton("Yes", null) // Proceed
-                    .setNegativeButton("No") { dialog, _ ->
-                        chkSettingsLock.isChecked = false // revert
-                        dialog.dismiss()
-                    }
+                    .setPositiveButton("Yes") { _, _ -> confirmed = true }
+                    .setNegativeButton("No", null)
+                    // Back or an outside tap reverts too; only "Yes" keeps the lock.
+                    .setOnDismissListener { if (!confirmed) chkSettingsLock.isChecked = false }
                     .show()
             }
             true

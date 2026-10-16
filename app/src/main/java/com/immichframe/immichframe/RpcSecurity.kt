@@ -34,4 +34,13 @@ internal class SlidingWindowRateLimiter(
         requests.addLast(nowMillis)
         return true
     }
+
+    /** Whether [allow] would refuse now, without recording an attempt. */
+    @Synchronized
+    fun isLimited(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        while (requests.isNotEmpty() && nowMillis - requests.first() >= windowMillis) {
+            requests.removeFirst()
+        }
+        return requests.size >= limit
+    }
 }

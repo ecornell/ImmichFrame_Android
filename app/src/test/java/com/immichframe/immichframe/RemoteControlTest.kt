@@ -68,6 +68,17 @@ class RemoteControlTest {
         assertTrue(shouldAcceptMqttMessage("homeassistant/status", retained = true))
     }
 
+    @Test fun limitCheckDoesNotRecordAnAttempt() {
+        val limits = ClientRateLimiters(limit = 2, windowMillis = 100)
+        assertFalse(limits.isLimited("a", 0))
+        assertTrue(limits.allow("a", 0))
+        assertFalse(limits.isLimited("a", 1))
+        assertTrue(limits.allow("a", 1))
+        assertTrue(limits.isLimited("a", 2))
+        assertFalse(limits.isLimited("a", 100))
+        assertFalse(limits.isLimited("b", 2))
+    }
+
     @Test fun clientRateLimitsAreIndependentAndBounded() {
         val limits = ClientRateLimiters(limit = 1, windowMillis = 100, maxClients = 2)
         assertTrue(limits.allow("one", 0))

@@ -22,6 +22,10 @@ class RpcHttpServer(
         }
 
         val clientAddress = session.remoteIpAddress.orEmpty()
+        // Refuse a client over the failed-auth limit before comparing, so it cannot keep guessing.
+        if (failedAuthRateLimiters.isLimited(clientAddress)) {
+            return json(Response.Status.TOO_MANY_REQUESTS, JSONObject().put("ok", false).put("error", "Rate limited"))
+        }
         val supplied = RpcSecurity.bearerToken(session.headers["authorization"])
         if (!RpcSecurity.authorized(expectedToken(), supplied)) {
             if (!failedAuthRateLimiters.allow(clientAddress)) {
@@ -131,4 +135,8 @@ internal class ClientRateLimiters(
         clients.getOrPut(client.ifBlank { "unknown" }) {
             SlidingWindowRateLimiter(limit, windowMillis)
         }.allow(nowMillis)
+
+    @Synchronized
+    fun isLimited(client: String, nowMillis: Long = System.currentTimeMillis()): Boolean =
+        clients[client.ifBlank { "unknown" }]?.isLimited(nowMillis) == true
 }
