@@ -14,5 +14,14 @@ class SettingsActivity : AppCompatActivity() {
             .replace(android.R.id.content, SettingsFragment())
             .commit()
     }
-    
+
+    override fun onResume() {
+        super.onResume()
+        ConfigurationScreens.onResumed()
+    }
+
+    override fun onPause() {
+        ConfigurationScreens.onPaused()
+        super.onPause()
+    }
 }

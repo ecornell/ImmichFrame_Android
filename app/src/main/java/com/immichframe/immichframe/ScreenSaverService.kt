@@ -634,7 +634,12 @@ class ScreenSaverService : DreamService() {
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
             destroyWebView()
-            retrofit = Helpers.createRetrofit(savedUrl, authSecret)
+            retrofit = Helpers.createRetrofit(
+                savedUrl, authSecret,
+                Helpers.clientIdentifier(
+                    PreferenceManager.getDefaultSharedPreferences(applicationContext), "screensaver",
+                ),
+            )
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             CachedServerSettingsStore.read(applicationContext)?.let { cachedSettings ->
                 setOfflineIndicator(true)

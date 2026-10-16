@@ -93,6 +93,16 @@ private class RuleState(days: Set<Int>, ranges: List<Helpers.ActiveRange>) {
 }
 
 class ActiveScheduleActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        ConfigurationScreens.onResumed()
+    }
+
+    override fun onPause() {
+        ConfigurationScreens.onPaused()
+        super.onPause()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)

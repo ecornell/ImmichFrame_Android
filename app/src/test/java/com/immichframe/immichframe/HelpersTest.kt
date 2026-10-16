@@ -4,11 +4,39 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Test
 import java.util.Calendar
 import java.util.TimeZone
 
 class HelpersTest {
+    @Test fun clientIdentifierNamesTheModelDeviceAndSource() {
+        assertEquals("WF1561 3f9a", Helpers.clientIdentifier("WF1561", "3f9a0c1d2e3f4a5b"))
+        assertEquals("w10j05 3f9a widget", Helpers.clientIdentifier(" w10j05 ", "3f9a0c1d2e3f4a5b", "widget"))
+        assertEquals("Android 3f9a", Helpers.clientIdentifier("", "3f9a0c1d2e3f4a5b"))
+    }
+
+    @Test fun clientIdentifierIsAddedOnceToEveryRequest() {
+        val url = "http://frame.local:8080/api/Asset/RandomImageAndInfo?includeVideos=true".toHttpUrl()
+        val named = Helpers.withClientIdentifier(url, "WF1561 3f9a")
+        assertEquals("WF1561 3f9a", named.queryParameter("clientIdentifier"))
+        assertEquals("true", named.queryParameter("includeVideos"))
+        assertEquals(named, Helpers.withClientIdentifier(named, "other"))
+        assertEquals(url, Helpers.withClientIdentifier(url, ""))
+    }
+
+    @Test fun configurationScreensBlockTheWakeLaunchOnlyWhileResumed() {
+        assertFalse(ConfigurationScreens.isInFront)
+        ConfigurationScreens.onResumed()
+        assertTrue(ConfigurationScreens.isInFront)
+        ConfigurationScreens.onPaused()
+        ConfigurationScreens.onPaused()
+        assertFalse(ConfigurationScreens.isInFront)
+        ConfigurationScreens.onResumed()
+        assertTrue(ConfigurationScreens.isInFront)
+        ConfigurationScreens.onPaused()
+    }
+
     @Test fun dimensionsNeverUpscale() {
         assertEquals(800 to 600, Helpers.scaledDimensions(800, 600, 1000))
         assertEquals(1000 to 500, Helpers.scaledDimensions(4000, 2000, 1000))

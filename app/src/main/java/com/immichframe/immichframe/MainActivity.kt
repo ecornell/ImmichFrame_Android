@@ -979,7 +979,10 @@ class MainActivity : AppCompatActivity() {
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
             destroyWebView()
-            retrofit = Helpers.createRetrofit(savedUrl, authSecret)
+            retrofit = Helpers.createRetrofit(
+                savedUrl, authSecret,
+                Helpers.clientIdentifier(PreferenceManager.getDefaultSharedPreferences(applicationContext)),
+            )
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
 
             // Render the last successful image immediately at cold start. The image cache needs

@@ -1,10 +1,12 @@
 package com.immichframe.immichframe
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.os.Build
 import android.util.Base64
 import retrofit2.Call
 import retrofit2.http.GET
@@ -12,6 +14,7 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 import okhttp3.ResponseBody
 import androidx.core.graphics.scale
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -246,7 +249,22 @@ object Helpers {
     /** Retrofit throws on a base URL without an http(s) scheme and host, e.g. "192.168.1.5:8080". */
     fun isValidServerUrl(url: String): Boolean = url.toHttpUrlOrNull() != null
 
-    fun createRetrofit(baseUrl: String, authSecret: String): Retrofit {
+    /**
+     * How this device names itself to the server, e.g. "WF1561 3f9a" or "WF1561 3f9a screensaver".
+     * The server strips '-' and '_' from identifiers, so the parts are separated by spaces.
+     */
+    fun clientIdentifier(model: String, deviceId: String, source: String? = null): String =
+        listOfNotNull(model.trim().ifEmpty { "Android" }, deviceId.take(4), source).joinToString(" ")
+
+    fun clientIdentifier(prefs: SharedPreferences, source: String? = null): String =
+        clientIdentifier(Build.MODEL.orEmpty(), RemoteIdentity.getOrCreate(prefs), source)
+
+    /** The server records shown assets and dedupes webhooks per client, so every request names it. */
+    fun withClientIdentifier(url: HttpUrl, clientIdentifier: String): HttpUrl =
+        if (clientIdentifier.isBlank() || url.queryParameter("clientIdentifier") != null) url
+        else url.newBuilder().addQueryParameter("clientIdentifier", clientIdentifier).build()
+
+    fun createRetrofit(baseUrl: String, authSecret: String, clientIdentifier: String = ""): Retrofit {
         val normalizedBaseUrl = if (!baseUrl.endsWith("/")) "$baseUrl/" else baseUrl
 
         val client = OkHttpClient.Builder()
@@ -254,7 +272,9 @@ object Helpers {
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
             .addInterceptor { chain ->
-            val originalRequest = chain.request()
+            val namedRequest = chain.request()
+            val originalRequest = namedRequest.newBuilder()
+                .url(withClientIdentifier(namedRequest.url, clientIdentifier)).build()
 
             val request = if (authSecret.isNotEmpty()) {
                 originalRequest.newBuilder().addHeader("Authorization", "Bearer $authSecret")
