@@ -1,5 +1,6 @@
 package com.immichframe.immichframe
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,5 +23,20 @@ class PlaybackSessionTest {
         assertTrue(PlaybackPolicies.shouldWaitForPortraitPair(true, "splitview", true))
         assertFalse(PlaybackPolicies.shouldWaitForPortraitPair(true, "splitview", false))
         assertFalse(PlaybackPolicies.shouldWaitForPortraitPair(false, "splitview", true))
+    }
+
+    @Test fun unpairedPortraitIsHeldOnceThenShownAlone() {
+        assertEquals(
+            PlaybackPolicies.Pairing("portrait", "portrait2", null),
+            PlaybackPolicies.pairPortrait("portrait", firstWasHeld = false, "portrait2", nextWaitsForPair = true),
+        )
+        assertEquals(
+            PlaybackPolicies.Pairing("landscape", null, "portrait"),
+            PlaybackPolicies.pairPortrait("portrait", firstWasHeld = false, "landscape", nextWaitsForPair = false),
+        )
+        assertEquals(
+            PlaybackPolicies.Pairing("portrait", null, "landscape"),
+            PlaybackPolicies.pairPortrait("portrait", firstWasHeld = true, "landscape", nextWaitsForPair = false),
+        )
     }
 }

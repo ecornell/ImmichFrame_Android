@@ -158,6 +158,10 @@ class MainActivity : AppCompatActivity() {
     private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
     private var slideJob: Job? = null
     private var slideBuildGeneration = 0L
+
+    /** A fetched image that the last slide could not use; the next slide shows it first. */
+    @Volatile private var heldImage: Helpers.PreparedImage? = null
+
     private val prefetchRunnable = Runnable { prefetchNextSlide() }
     private lateinit var framePresenter: NativeFramePresenter
     private val imageTimer = PlaybackTimer(
@@ -587,13 +591,20 @@ class MainActivity : AppCompatActivity() {
         spec: SlideSpec,
         token: Long,
     ): BuiltSlide {
-        var first = fetchImage(api, includeVideos)
+        val held = heldImage
+        heldImage = null
+        var first = held ?: fetchImage(api, includeVideos)
         var second: Helpers.PreparedImage? = null
         // In split view a portrait waits for the next image: another portrait pairs with it,
-        // anything else is shown alone in its place.
+        // anything else is shown alone and the portrait waits for the following slide.
         if (waitsForPortraitPair(first, spec.layout)) {
             val next = fetchImage(api, includeVideos)
-            if (waitsForPortraitPair(next, spec.layout)) second = next else first = next
+            val pairing = PlaybackPolicies.pairPortrait(
+                first, firstWasHeld = held != null, next, waitsForPortraitPair(next, spec.layout),
+            )
+            first = pairing.first
+            second = pairing.second
+            heldImage = pairing.held
         }
         val frame = renderSlide(spec, first, second)
         return BuiltSlide(frame, second ?: first, spec, token)

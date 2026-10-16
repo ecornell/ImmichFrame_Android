@@ -112,4 +112,18 @@ internal object PlaybackPolicies {
         layout: String,
         allowPortraitPair: Boolean,
     ): Boolean = allowPortraitPair && isPortrait && layout == "splitview"
+
+    data class Pairing<T>(val first: T, val second: T?, val held: T?)
+
+    /**
+     * Decides a split-view slide when a waiting portrait [first] has been followed by [next].
+     * Neither is skipped, since the server already counted both as shown: an unpaired portrait is
+     * held for one more slide to find a partner, and shown alone if it already waited once.
+     */
+    fun <T> pairPortrait(first: T, firstWasHeld: Boolean, next: T, nextWaitsForPair: Boolean): Pairing<T> =
+        when {
+            nextWaitsForPair -> Pairing(first, next, held = null)
+            firstWasHeld -> Pairing(first, second = null, held = next)
+            else -> Pairing(next, second = null, held = first)
+        }
 }
