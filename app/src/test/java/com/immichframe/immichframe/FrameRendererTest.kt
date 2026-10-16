@@ -81,6 +81,14 @@ class FrameRendererTest {
         assertEquals(1.2f, KenBurnsZoomController.scaleAt(30_000, 20_000, 1.2f))
     }
 
+    @Test fun fadeAlphaEasesBetweenEndpointsAndStopsAtTarget() {
+        assertEquals(0f, FadeController.alphaAt(0, 1_000, 0f, 1f), 0.0001f)
+        assertEquals(0.5f, FadeController.alphaAt(500, 1_000, 0f, 1f), 0.0001f)
+        assertTrue(FadeController.alphaAt(100, 1_000, 0f, 1f) < 0.1f)
+        assertEquals(0f, FadeController.alphaAt(2_000, 1_000, 1f, 0f), 0.0001f)
+        assertEquals(1f, FadeController.alphaAt(0, 0, 0f, 1f))
+    }
+
     @Test fun cropDecodeTargetPreservesExtremeAspectRatios() {
         val slot = IntBounds(0, 0, 1920, 1080)
         assertEquals(8000, FrameRenderer.requiredDecodeDimension(8000, 1000, slot, FrameScale.CROP))

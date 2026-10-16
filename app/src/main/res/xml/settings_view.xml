@@ -106,12 +106,19 @@
             app:showSeekBarValue="true"
             android:title="Background darkness" />
         <SeekBarPreference
-            android:defaultValue="30"
+            android:defaultValue="15"
             android:key="zoomFrameRate"
             android:max="60"
             android:min="10"
             app:showSeekBarValue="true"
             android:title="Ken Burns zoom frame rate" />
+        <SeekBarPreference
+            android:defaultValue="30"
+            android:key="transitionFrameRate"
+            android:max="60"
+            android:min="10"
+            app:showSeekBarValue="true"
+            android:title="Crossfade frame rate" />
         <SwitchPreferenceCompat
             android:defaultValue="true"
             android:key="nativeVideos"

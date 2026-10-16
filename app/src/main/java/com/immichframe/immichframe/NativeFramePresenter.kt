@@ -4,51 +4,36 @@ import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import kotlin.math.PI
+import kotlin.math.cos
 
 /**
- * Bounded-rate Ken Burns transform driven by display vsync. Scale and translation are render
- * properties, so each step only re-composites the existing bitmap; no offscreen layer is needed.
- * Steps land on vsync boundaries, which keeps their size even at rates below the refresh rate.
+ * Runs a step on display vsync at a bounded rate. Steps land on vsync boundaries, which keeps
+ * their size even at rates below the refresh rate.
  */
-internal class KenBurnsZoomController(
+internal class VsyncStepper(
     private val choreographer: Choreographer = Choreographer.getInstance(),
 ) {
-    private var activeView: ImageView? = null
     private var callback: Choreographer.FrameCallback? = null
-    private var directionIndex = 0
-    private val directions = listOf(-1f to -0.5f, 0.6f to -1f, 1f to 0.5f, -0.6f to 1f)
 
-    fun start(
-        view: ImageView,
-        durationMillis: Long,
-        framesPerSecond: Int,
-        endScale: Float = 1.2f,
-    ) {
+    /** Calls [step] with the elapsed time at most [framesPerSecond] times a second until it returns false. */
+    fun start(framesPerSecond: Int, step: (elapsedMillis: Long) -> Boolean) {
         cancel()
-        val duration = durationMillis.coerceAtLeast(1L)
         val frameIntervalNanos = 1_000_000_000L / framesPerSecond.coerceIn(10, 60)
-        val direction = directions[directionIndex++ % directions.size]
-        val maxTranslationX = view.width * (endScale - 1f) * 0.22f
-        val maxTranslationY = view.height * (endScale - 1f) * 0.22f
-        activeView = view
         var startNanos = -1L
         var lastStepNanos = -1L
         val task = object : Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
-                if (activeView !== view || !view.isAttachedToWindow) return
+                if (callback !== this) return
                 if (startNanos < 0L) startNanos = frameTimeNanos
                 if (lastStepNanos < 0L ||
                     frameTimeNanos - lastStepNanos >= frameIntervalNanos - VSYNC_TOLERANCE_NANOS
                 ) {
                     lastStepNanos = frameTimeNanos
-                    val elapsed = (frameTimeNanos - startNanos) / 1_000_000L
-                    val fraction = fractionAt(elapsed, duration)
-                    val scale = 1f + ((endScale - 1f) * fraction)
-                    view.scaleX = scale
-                    view.scaleY = scale
-                    view.translationX = maxTranslationX * direction.first * fraction
-                    view.translationY = maxTranslationY * direction.second * fraction
-                    if (elapsed >= duration) return
+                    if (!step((frameTimeNanos - startNanos) / 1_000_000L)) {
+                        if (callback === this) callback = null
+                        return
+                    }
                 }
                 choreographer.postFrameCallback(this)
             }
@@ -60,22 +45,87 @@ internal class KenBurnsZoomController(
     fun cancel() {
         callback?.let(choreographer::removeFrameCallback)
         callback = null
-        activeView = null
     }
 
-    companion object {
+    private companion object {
         /** Lets a 15 or 30 fps target step on every 4th or 2nd 60 Hz vsync despite jitter. */
-        private const val VSYNC_TOLERANCE_NANOS = 4_000_000L
+        const val VSYNC_TOLERANCE_NANOS = 4_000_000L
+    }
+}
 
+/**
+ * Bounded-rate Ken Burns transform. Scale and translation are render properties, so each step
+ * only re-composites the existing bitmap; no offscreen layer is needed.
+ */
+internal class KenBurnsZoomController(
+    private val stepper: VsyncStepper = VsyncStepper(),
+) {
+    private var directionIndex = 0
+    private val directions = listOf(-1f to -0.5f, 0.6f to -1f, 1f to 0.5f, -0.6f to 1f)
+
+    fun start(
+        view: ImageView,
+        durationMillis: Long,
+        framesPerSecond: Int,
+        endScale: Float = 1.2f,
+    ) {
+        val duration = durationMillis.coerceAtLeast(1L)
+        val direction = directions[directionIndex++ % directions.size]
+        val maxTranslationX = view.width * (endScale - 1f) * 0.22f
+        val maxTranslationY = view.height * (endScale - 1f) * 0.22f
+        stepper.start(framesPerSecond) { elapsed ->
+            if (!view.isAttachedToWindow) return@start false
+            val fraction = fractionAt(elapsed, duration)
+            val scale = 1f + ((endScale - 1f) * fraction)
+            view.scaleX = scale
+            view.scaleY = scale
+            view.translationX = maxTranslationX * direction.first * fraction
+            view.translationY = maxTranslationY * direction.second * fraction
+            elapsed < duration
+        }
+    }
+
+    fun cancel() = stepper.cancel()
+
+    companion object {
         internal fun scaleAt(elapsedMillis: Long, durationMillis: Long, endScale: Float): Float {
             val fraction = fractionAt(elapsedMillis, durationMillis)
             return 1f + ((endScale - 1f) * fraction)
         }
-
-        private fun fractionAt(elapsedMillis: Long, durationMillis: Long): Float =
-            (elapsedMillis.toFloat() / durationMillis.coerceAtLeast(1L)).coerceIn(0f, 1f)
     }
 }
+
+/**
+ * Bounded-rate alpha fade. Each crossfade frame blends two full-screen bitmaps and takes about
+ * 30 ms on the WF1561, so an unbounded 60 fps fade only produced uneven, janky frames.
+ */
+internal class FadeController(
+    private val stepper: VsyncStepper = VsyncStepper(),
+) {
+    fun start(view: View, toAlpha: Float, durationMillis: Long, framesPerSecond: Int, endAction: Runnable) {
+        val fromAlpha = view.alpha
+        stepper.start(framesPerSecond) { elapsed ->
+            view.alpha = alphaAt(elapsed, durationMillis, fromAlpha, toAlpha)
+            val running = elapsed < durationMillis
+            if (!running) endAction.run()
+            running
+        }
+    }
+
+    fun cancel() = stepper.cancel()
+
+    companion object {
+        /** Accelerate-decelerate easing, matching the ViewPropertyAnimator default it replaces. */
+        internal fun alphaAt(elapsedMillis: Long, durationMillis: Long, from: Float, to: Float): Float {
+            val fraction = if (durationMillis <= 0L) 1f else fractionAt(elapsedMillis, durationMillis)
+            val eased = (cos((fraction + 1f) * PI) / 2.0 + 0.5).toFloat()
+            return from + (to - from) * eased
+        }
+    }
+}
+
+private fun fractionAt(elapsedMillis: Long, durationMillis: Long): Float =
+    (elapsedMillis.toFloat() / durationMillis.coerceAtLeast(1L)).coerceIn(0f, 1f)
 
 /**
  * Crossfades pre-composed native frames between two stacked ImageViews. Only the upper view's
@@ -88,6 +138,7 @@ internal class NativeFramePresenter(
     private val secondView: ImageView,
 ) {
     private val zoom = KenBurnsZoomController()
+    private val fade = FadeController()
     private var showingFirst = true
     private var generation = 0L
 
@@ -103,6 +154,7 @@ internal class NativeFramePresenter(
         zoomEnabled: Boolean,
         zoomDurationMillis: Long,
         zoomFramesPerSecond: Int,
+        transitionFramesPerSecond: Int,
         onPresented: (RenderedFrame) -> Unit,
     ) {
         val token = ++generation
@@ -111,6 +163,7 @@ internal class NativeFramePresenter(
         showingFirst = !showingFirst
 
         zoom.cancel()
+        fade.cancel()
         oldView.animate().cancel()
         newView.animate().cancel()
         val outgoingDrawable = oldView.drawable
@@ -136,11 +189,11 @@ internal class NativeFramePresenter(
             // Fade the new frame in over the opaque old one.
             oldView.alpha = 1f
             newView.alpha = 0f
-            newView.animate().alpha(1f).setDuration(duration).withEndAction(endAction).start()
+            fade.start(newView, 1f, duration, transitionFramesPerSecond, endAction)
         } else {
             // The new frame is underneath: show it opaque and fade the old one out above it.
             newView.alpha = 1f
-            oldView.animate().alpha(0f).setDuration(duration).withEndAction(endAction).start()
+            fade.start(oldView, 0f, duration, transitionFramesPerSecond, endAction)
         }
 
         onPresented(frame)
@@ -151,6 +204,7 @@ internal class NativeFramePresenter(
     fun clear() {
         generation++
         zoom.cancel()
+        fade.cancel()
         listOf(firstView, secondView).forEach { view ->
             view.animate().cancel()
             view.setImageDrawable(null)

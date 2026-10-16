@@ -142,7 +142,8 @@ class MainActivity : AppCompatActivity() {
     private var edgeFeatherPx = 32
     private var backgroundBlurRadius = 16
     private var backgroundDarkness = 84
-    private var zoomFrameRate = 30
+    private var zoomFrameRate = 15
+    private var transitionFrameRate = 30
     private val burnInController = OverlayBurnInController()
     private var showCurrentDate = true
     private var currentWeather = ""
@@ -388,6 +389,7 @@ class MainActivity : AppCompatActivity() {
             zoomEnabled = zoomEnabled,
             zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
             zoomFramesPerSecond = zoomFrameRate,
+            transitionFramesPerSecond = transitionFrameRate,
         ) {
             lastFrameMetaLeft = it.left
             lastFrameMetaRight = it.right
@@ -851,7 +853,8 @@ class MainActivity : AppCompatActivity() {
         edgeFeatherPx = (prefs.getInt("edgeFeatherDp", 32) * resources.displayMetrics.density).toInt()
         backgroundBlurRadius = prefs.getInt("backgroundBlurRadius", 16).coerceIn(0, 24)
         backgroundDarkness = prefs.getInt("backgroundDarkness", 84).coerceIn(0, 200)
-        zoomFrameRate = prefs.getInt("zoomFrameRate", 30).coerceIn(10, 60)
+        zoomFrameRate = prefs.getInt("zoomFrameRate", 15).coerceIn(10, 60)
+        transitionFrameRate = prefs.getInt("transitionFrameRate", 30).coerceIn(10, 60)
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
