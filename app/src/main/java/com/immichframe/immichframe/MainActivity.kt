@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -216,6 +217,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Experiment: a 16-bit window halves the buffer the compositor reads on every frame.
+        // Photos are already RGB_565; text and gradients may band. Local preference, no UI.
+        if (PreferenceManager.getDefaultSharedPreferences(applicationContext).getBoolean("screenBuffer16Bit", false)) {
+            window.setFormat(PixelFormat.RGB_565)
+        }
         setContentView(R.layout.main_view)
         // The root layout paints black over the whole window; skip a second full-screen fill.
         window.setBackgroundDrawable(null)
