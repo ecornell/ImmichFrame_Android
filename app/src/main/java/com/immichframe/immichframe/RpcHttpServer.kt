@@ -2,6 +2,7 @@ package com.immichframe.immichframe
 
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
+import java.io.File
 import java.util.LinkedHashMap
 
 class RpcHttpServer(
@@ -45,7 +46,14 @@ class RpcHttpServer(
             try {
                 val files = HashMap<String, String>()
                 session.parseBody(files)
-                files["postData"].orEmpty().take(MAX_BODY_BYTES + 1)
+                // NanoHTTPD keeps a POST body in "postData" but writes a PUT body to a temp file
+                // under "content"; Content-Length is already bounded above.
+                val body = if (session.method == Method.PUT) {
+                    files["content"]?.let { File(it).readText(Charsets.UTF_8) }.orEmpty()
+                } else {
+                    files["postData"].orEmpty()
+                }
+                body.take(MAX_BODY_BYTES + 1)
             } catch (_: Exception) {
                 return json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", "Invalid request body"))
             }

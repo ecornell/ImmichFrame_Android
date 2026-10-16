@@ -11,12 +11,14 @@ class RpcHttpServerIntegrationTest {
     @Test fun loopbackServerEnforcesAuthenticationAndServesState() {
         val state = RemoteStateStore(RemoteFrameState(version = "integration"))
         val nextCount = AtomicInteger()
+        val pausedRequests = mutableListOf<Boolean>()
+        val displayRequests = mutableListOf<Boolean>()
         val server = RpcHttpServer(
             expectedToken = { "test-token" },
             state = state,
             commands = object : RemoteCommands {
-                override fun setDisplayActive(active: Boolean) = Unit
-                override fun setPaused(paused: Boolean) = Unit
+                override fun setDisplayActive(active: Boolean) { displayRequests += active }
+                override fun setPaused(paused: Boolean) { pausedRequests += paused }
                 override fun togglePaused() = Unit
                 override fun setBrightness(brightness: Float?) = Unit
                 override fun next() { nextCount.incrementAndGet() }
@@ -42,6 +44,11 @@ class RpcHttpServerIntegrationTest {
             assertEquals(0, nextCount.get())
             assertEquals(200, request(port, "/api/v1/actions/next", "Bearer test-token", "POST", "{}").first)
             assertEquals(1, nextCount.get())
+            // PUT bodies arrive through a different NanoHTTPD path than POST bodies.
+            assertEquals(200, request(port, "/api/v1/playback", "Bearer test-token", "PUT", "{\"paused\":true}").first)
+            assertEquals(200, request(port, "/api/v1/display", "Bearer test-token", "PUT", "{\"active\":false}").first)
+            assertEquals(listOf(true), pausedRequests)
+            assertEquals(listOf(false), displayRequests)
         } finally {
             server.stop()
         }
