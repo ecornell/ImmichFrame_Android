@@ -883,6 +883,16 @@ class MainActivity : AppCompatActivity() {
 
         if (activeTimes) {
             handler.removeCallbacks(activeCheckRunnable)
+            if (isFrameInactive == null) {
+                // At cold start resolve the schedule first. Becoming active loads the settings
+                // itself and starting asleep needs none, so continuing would start a second session.
+                checkActiveTime()
+                if (isFrameInactive != null) {
+                    // An active frame's nested loadSettings has already armed the check.
+                    if (isFrameInactive == true) handler.postDelayed(activeCheckRunnable, 30_000L)
+                    return
+                }
+            }
             handler.post(activeCheckRunnable)
         } else {
             handler.removeCallbacks(activeCheckRunnable)
