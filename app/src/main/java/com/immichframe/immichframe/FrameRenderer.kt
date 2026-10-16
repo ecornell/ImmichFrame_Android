@@ -94,7 +94,6 @@ internal object FrameRenderer {
         scale: FrameScale,
         background: FrameBackground,
         gapPx: Int,
-        gapColor: Int,
         featherPx: Int,
         backgroundBlurRadius: Int,
         backgroundDarkness: Int,
@@ -103,8 +102,7 @@ internal object FrameRenderer {
         val slots = slotBounds(width, height, split, gapPx).map(IntBounds::toRect)
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
         val canvas = Canvas(output)
-        // Each slot paints every one of its pixels, so only the split gap needs a fill.
-        if (split) canvas.drawColor(gapColor)
+        // Each slot paints every one of its pixels, and the divider below fills the split gap.
         // The average colour is only visible as an AVERAGE background or as the split divider.
         val needsAverage = split || background == FrameBackground.AVERAGE
         val firstResult = drawImage(
@@ -179,8 +177,13 @@ internal object FrameRenderer {
         val image = Helpers.decodePreparedBitmap(prepared, targetDecode)
         val content = detectContentBounds(image)
         val averageColor = if (needsAverage) thumbHashAverage(prepared) else Color.BLACK
-        val destination = destination(content.width(), content.height(), slot, scale)
-        val photoBounds = FloatBounds(destination.left, destination.top, destination.right, destination.bottom)
+        // A photo within a pixel of an edge is stretched to it, so a sub-pixel gap does not
+        // build a blurred backdrop and a feather band for a sliver of background.
+        val photoBounds = snapToSlot(
+            destinationBounds(content.width(), content.height(), slotBounds, scale),
+            slotBounds,
+        )
+        val destination = photoBounds.toRectF()
 
         canvas.save()
         canvas.clipRect(slot)
@@ -226,8 +229,7 @@ internal object FrameRenderer {
         FrameBackground.BLACK -> Backdrop(Paint().apply { color = Color.BLACK }, null, Color.BLACK, null)
         FrameBackground.AVERAGE -> Backdrop(Paint().apply { color = averageColor }, null, averageColor, null)
         FrameBackground.THUMBHASH -> {
-            val stageWidth = slot.width().coerceIn(1, STAGE_MAX_WIDTH)
-            val stageHeight = slot.height().coerceIn(1, STAGE_MAX_HEIGHT)
+            val (stageWidth, stageHeight) = stageSize(slot.width(), slot.height())
             val stage = Bitmap.createBitmap(stageWidth, stageHeight, Bitmap.Config.ARGB_8888)
             val stageCanvas = Canvas(stage)
             stageCanvas.drawBitmap(
@@ -250,7 +252,13 @@ internal object FrameRenderer {
                     )
                 })
             }
-            Backdrop(Paint(Paint.FILTER_BITMAP_FLAG).apply { this.shader = shader }, shader, Color.BLACK, stage)
+            // Dither the smooth blurred gradient, which would otherwise band on RGB_565.
+            Backdrop(
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply { this.shader = shader },
+                shader,
+                Color.BLACK,
+                stage,
+            )
         }
     }
 
@@ -263,6 +271,27 @@ internal object FrameRenderer {
 
     /** The stage is half the former 320×180 size, so the blur radius halves with it. */
     internal fun stageBlurRadius(radius: Int): Int = (radius.coerceIn(1, 24) + 1) / 2
+
+    /** Blur stage dimensions: one scale factor for both axes, so the backdrop is not distorted. */
+    internal fun stageSize(slotWidth: Int, slotHeight: Int): Pair<Int, Int> {
+        val factor = minOf(
+            STAGE_MAX_WIDTH.toFloat() / slotWidth,
+            STAGE_MAX_HEIGHT.toFloat() / slotHeight,
+            1f,
+        )
+        return Math.round(slotWidth * factor).coerceAtLeast(1) to Math.round(slotHeight * factor).coerceAtLeast(1)
+    }
+
+    /** Moves each photo edge that falls short of the slot edge by at most a pixel onto it. */
+    internal fun snapToSlot(photo: FloatBounds, slot: IntBounds): FloatBounds {
+        fun near(gap: Float) = gap > 0f && gap <= COVER_TOLERANCE_PX
+        return FloatBounds(
+            if (near(photo.left - slot.left)) slot.left.toFloat() else photo.left,
+            if (near(photo.top - slot.top)) slot.top.toFloat() else photo.top,
+            if (near(slot.right - photo.right)) slot.right.toFloat() else photo.right,
+            if (near(slot.bottom - photo.bottom)) slot.bottom.toFloat() else photo.bottom,
+        )
+    }
 
     internal fun coversSlot(photo: FloatBounds, slot: IntBounds): Boolean =
         photo.left <= slot.left && photo.top <= slot.top &&
@@ -421,6 +450,7 @@ internal object FrameRenderer {
     /** Background cover at stops 0, 0.2, 0.5, 0.8 and 1 of the feather band, from the edge in. */
     internal val FEATHER_COVER_ALPHAS = intArrayOf(255, 229, 127, 25, 0)
     internal const val EDGE_OVERLAP_PX = 2f
+    private const val COVER_TOLERANCE_PX = 1f
     private const val STAGE_MAX_WIDTH = 160
     private const val STAGE_MAX_HEIGHT = 90
 

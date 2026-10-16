@@ -53,6 +53,23 @@ class FrameRendererTest {
         assertTrue(FrameRenderer.letterboxBounds(slot, crop, 2f).isEmpty())
     }
 
+    @Test fun subPixelGapsSnapToTheSlotSoNoBackdropIsBuilt() {
+        val slot = IntBounds(0, 0, 1920, 1080)
+        val snapped = FrameRenderer.snapToSlot(FloatBounds(0.4f, -2f, 1919.3f, 1082f), slot)
+        assertEquals(FloatBounds(0f, -2f, 1920f, 1082f), snapped)
+        assertTrue(FrameRenderer.coversSlot(snapped, slot))
+        // A real letterbox is left alone.
+        val letterboxed = FloatBounds(225f, 0f, 1695f, 1080f)
+        assertEquals(letterboxed, FrameRenderer.snapToSlot(letterboxed, slot))
+    }
+
+    @Test fun blurStageKeepsTheSlotAspectRatio() {
+        assertEquals(160 to 90, FrameRenderer.stageSize(1920, 1080))
+        assertEquals(80 to 90, FrameRenderer.stageSize(955, 1080))
+        assertEquals(100 to 50, FrameRenderer.stageSize(100, 50))
+        assertEquals(160 to 1, FrameRenderer.stageSize(4000, 10))
+    }
+
     @Test fun featherCoverIsTheComplementOfTheFormerPhotoMask() {
         val formerMask = intArrayOf(0, 26, 128, 230, 255)
         assertEquals(

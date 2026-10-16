@@ -365,7 +365,6 @@ class MainActivity : AppCompatActivity() {
         val scale: FrameScale,
         val background: FrameBackground,
         val gapPx: Int,
-        val gapColor: Int,
         val featherPx: Int,
         val blurRadius: Int,
         val darkness: Int,
@@ -517,11 +516,8 @@ class MainActivity : AppCompatActivity() {
         val width = window.decorView.width
         val height = window.decorView.height
         if (width <= 1 || height <= 1) return null
-        val gapColor = runCatching {
-            (serverSettings.primaryColor?.takeIf(String::isNotBlank) ?: "#000000").toColorInt()
-        }.getOrDefault(Color.BLACK)
         return SlideSpec(
-            width, height, frameScale, frameBackground, splitGapPx, gapColor, edgeFeatherPx,
+            width, height, frameScale, frameBackground, splitGapPx, edgeFeatherPx,
             backgroundBlurRadius, backgroundDarkness, serverSettings.layout,
         )
     }
@@ -532,7 +528,7 @@ class MainActivity : AppCompatActivity() {
         second: Helpers.PreparedImage?,
     ): RenderedFrame = FrameRenderer.render(
         spec.width, spec.height, first, second, spec.scale, spec.background, spec.gapPx,
-        spec.gapColor, spec.featherPx, spec.blurRadius, spec.darkness,
+        spec.featherPx, spec.blurRadius, spec.darkness,
     )
 
     private fun buildSlide(token: Long, spec: SlideSpec, prefetch: Boolean) {

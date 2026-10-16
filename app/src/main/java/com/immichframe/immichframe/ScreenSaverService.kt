@@ -245,11 +245,8 @@ class ScreenSaverService : DreamService() {
                     handler.postDelayed({ if (generation == imageGeneration) getNextImage() }, 100L)
                     return@launch
                 }
-                val gapColor = runCatching {
-                    (serverSettings.primaryColor?.takeIf(String::isNotBlank) ?: "#000000").toColorInt()
-                }.getOrDefault(Color.BLACK)
                 rendered = FrameRenderer.render(
-                    width, height, first, second, frameScale, frameBackground, splitGapPx, gapColor,
+                    width, height, first, second, frameScale, frameBackground, splitGapPx,
                     edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
                 )
                 withContext(Dispatchers.Main) {
