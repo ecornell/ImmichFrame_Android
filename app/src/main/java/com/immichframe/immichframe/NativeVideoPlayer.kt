@@ -80,6 +80,7 @@ internal class NativeVideoPlayer(
     private var prepared = false
     private var paused = false
     private var revealed = false
+    private var completed = false
     private var videoWidth = 0
     private var videoHeight = 0
 
@@ -88,7 +89,8 @@ internal class NativeVideoPlayer(
         textureView.alpha = 0f
     }
 
-    val isActive: Boolean get() = player != null || pending != null
+    /** False once a video has finished; its last frame stays up until the next slide. */
+    val isActive: Boolean get() = (player != null && !completed) || pending != null
 
     fun play(
         uri: Uri,
@@ -98,7 +100,9 @@ internal class NativeVideoPlayer(
         revealMillis: Long,
         listener: Listener,
     ) {
-        release()
+        // Keep any fade-out of the previous video's last frame running; the new video's first
+        // frame cancels it on reveal, so back-to-back videos crossfade instead of cutting.
+        releasePlayer()
         paused = false
         val request = Request(uri, headers, crop, playAudio, revealMillis, listener)
         val texture = textureView.surfaceTexture
@@ -115,7 +119,8 @@ internal class NativeVideoPlayer(
     fun resume() {
         paused = false
         val active = player ?: return
-        if (prepared && !active.isPlaying) active.start()
+        // A finished video stays prepared; starting it again would replay it from the beginning.
+        if (prepared && !completed && !active.isPlaying) active.start()
     }
 
     /** Stops playback and fades the last decoded frame out alongside the next slide. */
@@ -137,6 +142,7 @@ internal class NativeVideoPlayer(
         current = request
         prepared = false
         revealed = false
+        completed = false
         videoWidth = 0
         videoHeight = 0
         val mediaPlayer = MediaPlayer()
@@ -160,12 +166,14 @@ internal class NativeVideoPlayer(
                 request.listener.onVideoPrepared(it.duration)
             }
             mediaPlayer.setOnCompletionListener {
-                if (token == generation) request.listener.onVideoFinished()
+                if (token != generation) return@setOnCompletionListener
+                completed = true
+                request.listener.onVideoFinished()
             }
             mediaPlayer.setOnErrorListener { _, what, extra ->
                 if (token == generation) {
                     Log.w(TAG, "Video playback failed ($what/$extra); keeping the poster frame")
-                    release()
+                    releaseAfterFailure()
                     request.listener.onVideoFailed()
                 }
                 true
@@ -173,9 +181,14 @@ internal class NativeVideoPlayer(
             mediaPlayer.prepareAsync()
         } catch (error: Exception) {
             Log.w(TAG, "Unable to start video; keeping the poster frame", error)
-            release()
+            releaseAfterFailure()
             request.listener.onVideoFailed()
         }
+    }
+
+    /** Before the reveal the view is transparent or still fading out a previous video; let that finish. */
+    private fun releaseAfterFailure() {
+        if (revealed) release() else releasePlayer()
     }
 
     private fun releasePlayer() {
@@ -183,6 +196,7 @@ internal class NativeVideoPlayer(
         pending = null
         current = null
         prepared = false
+        completed = false
         player?.let { active ->
             active.setOnVideoSizeChangedListener(null)
             active.setOnPreparedListener(null)
