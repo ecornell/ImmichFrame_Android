@@ -18,4 +18,14 @@
         <item>FIT</item>
         <item>CROP</item>
     </string-array>
+    <string-array name="photo_image_entries">
+        <item>Off</item>
+        <item>Blurred colours only</item>
+        <item>Thumbnail of the screen</item>
+    </string-array>
+    <string-array name="photo_image_values">
+        <item>OFF</item>
+        <item>BLURRED</item>
+        <item>THUMBNAIL</item>
+    </string-array>
 </resources>

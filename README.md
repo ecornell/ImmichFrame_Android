@@ -102,12 +102,18 @@ server newer than 1.0.37.3; older servers send none) and publishes two more enti
   slide with its people), `source` (`server`, or `cache` for the offline photo, which has no asset
   id) and `shown_at`.
 - `sensor.<frame>_photo_taken_at`: the capture time as a `timestamp` sensor.
+- `image.<frame>_current_photo_image`, only when **Home Assistant photo image** is not *Off*
+  (the default). *Blurred colours only* publishes the photo's thumbhash, which shows nothing
+  recognisable. *Thumbnail of the screen* publishes a JPEG of the rendered frame, split slides and
+  background included, at most 480 px on its long edge (roughly 30–50 KB per slide). Both are
+  retained on the broker and resent when Home Assistant restarts. The image goes over MQTT only,
+  not the RPC state.
 
 The same object is `currentPhoto` in `GET /api/v1/state`. Both update only when a slide is
 presented, not when it is prefetched, and keep the last photo while the display is off. Each
 state change publishes only the topics whose payload changed. **Report people names** removes
-`people` everywhere. Turning reporting off removes both entities and clears the last photo from
-the broker. Photo reporting runs in the activity (HOME) mode only, not as a screensaver. People
+`people` everywhere. Turning reporting off removes the photo entities and clears the last photo
+from the broker; turning the image off removes only the image entity and its last image. Photo reporting runs in the activity (HOME) mode only, not as a screensaver. People
 and places end up in Home Assistant history, so consider excluding these entities from the
 recorder or InfluxDB:
 

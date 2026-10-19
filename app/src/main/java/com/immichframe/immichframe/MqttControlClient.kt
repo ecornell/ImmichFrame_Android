@@ -21,7 +21,10 @@ internal data class MqttSettings(
     val deviceId: String,
     val discoveryPrefix: String = "homeassistant",
     val publishPhoto: Boolean = true,
+    val photoImage: PhotoImageMode = PhotoImageMode.OFF,
 ) {
+    val publishesPhotoImage: Boolean get() = publishPhoto && photoImage != PhotoImageMode.OFF
+
     val baseTopic: String get() = "immichframe/$deviceId"
 }
 
@@ -90,11 +93,14 @@ internal object MqttPayloads {
                 topic to json.put("state_topic", "$base/photo/taken_at").put("device_class", "timestamp")
             },
         )
+        val image = config("image", "current_photo_image", "Current photo image").let { (topic, json) ->
+            topic to json.put("image_topic", "$base/photo/image").put("content_type", PhotoImage.CONTENT_TYPE)
+        }
         val configs = entries.associate { it.first to it.second.toString() }
         // An empty retained config removes the entity, so turning reporting off leaves none behind.
         return configs + photoEntries.associate { (topic, json) ->
             topic to if (settings.publishPhoto) json.toString() else ""
-        }
+        } + (image.first to if (settings.publishesPhotoImage) image.second.toString() else "")
     }
 
     /** Photo topics are only part of the state once a photo has been shown. */
@@ -108,11 +114,18 @@ internal object MqttPayloads {
         )
     }
 
-    /** Empty retained payloads clear the last photo from the broker when reporting is off. */
+    /** Empty retained payloads clear the last photo, or just its image, from the broker when off. */
     fun photoCleanup(settings: MqttSettings): Map<String, String> {
         val base = settings.baseTopic
-        return listOf("state", "taken_at", "attributes").associate { "$base/photo/$it" to "" }
+        val topics = when {
+            !settings.publishPhoto -> listOf("state", "taken_at", "attributes", "image")
+            !settings.publishesPhotoImage -> listOf("image")
+            else -> emptyList()
+        }
+        return topics.associate { "$base/photo/$it" to "" }
     }
+
+    fun photoImageTopic(settings: MqttSettings): String = "${settings.baseTopic}/photo/image"
 
     private const val PAYLOAD_NONE = "None"
 
@@ -148,6 +161,8 @@ internal class MqttControlClient(
     // Every state change reaches publishState, so only changed topics are sent: the photo
     // attributes must not be republished for each brightness tick. Guarded by itself.
     private val lastPublished = HashMap<String, String>()
+    // Retained on the broker, but kept to resend after a reconnect or Home Assistant restart.
+    @Volatile private var lastPhotoImage: ByteArray? = null
 
     fun start(): Boolean {
         if (client != null) return true
@@ -179,7 +194,7 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
-                // Discovery + availability + state is 23 QoS-1 messages. Paho's default of ten
+                // Discovery + availability + state is about 25 QoS-1 messages. Paho's default of ten
                 // can drop the tail of that burst before acknowledgements arrive, especially
                 // when a retained Home Assistant birth triggers another snapshot at connect.
                 maxInflight = 64
@@ -278,9 +293,8 @@ internal class MqttControlClient(
         MqttPayloads.discovery(settings, state.snapshot().version).forEach { (topic, payload) ->
             publish(topic, payload, retained = true)
         }
-        if (!settings.publishPhoto) {
-            MqttPayloads.photoCleanup(settings).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
-        }
+        MqttPayloads.photoCleanup(settings).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
+        lastPhotoImage?.let { publish(MqttPayloads.photoImageTopic(settings), it, retained = true) }
         publish("${settings.baseTopic}/availability", "online", retained = true)
         // A reconnect or Home Assistant restart needs the full state again.
         synchronized(lastPublished) { lastPublished.clear() }
@@ -319,12 +333,22 @@ internal class MqttControlClient(
         }
     }
 
-    private fun publish(topic: String, payload: String, retained: Boolean): Boolean {
+    /** Publishes a JPEG of the photo on screen; ignored unless the image entity is enabled. */
+    fun publishPhotoImage(jpeg: ByteArray) {
+        if (!settings.publishesPhotoImage) return
+        lastPhotoImage = jpeg
+        publish(MqttPayloads.photoImageTopic(settings), jpeg, retained = true)
+    }
+
+    private fun publish(topic: String, payload: String, retained: Boolean): Boolean =
+        publish(topic, payload.toByteArray(), retained)
+
+    private fun publish(topic: String, payload: ByteArray, retained: Boolean): Boolean {
         if (!running) return false
         val mqtt = client ?: return false
         if (!mqtt.isConnected) return false
         return try {
-            mqtt.publish(topic, MqttMessage(payload.toByteArray()).apply {
+            mqtt.publish(topic, MqttMessage(payload).apply {
                 qos = 1
                 isRetained = retained
             })

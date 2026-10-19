@@ -80,6 +80,47 @@ class MqttControlClientIntegrationTest {
         }
     }
 
+    @Test(timeout = 25_000) fun photoImageIsPublishedRetainedAndResentAfterBirth() {
+        TestBroker().use { broker ->
+            val state = RemoteStateStore(RemoteFrameState(version = "integration"))
+            val client = MqttControlClient(
+                MqttSettings(
+                    "tcp://127.0.0.1:${broker.port}", "", "", "integration",
+                    photoImage = PhotoImageMode.THUMBNAIL,
+                ),
+                state,
+                object : RemoteCommands {
+                    override fun setDisplayActive(active: Boolean) = Unit
+                    override fun setPaused(paused: Boolean) = Unit
+                    override fun togglePaused() = Unit
+                    override fun setBrightness(brightness: Float?) = Unit
+                    override fun next() = Unit
+                    override fun previous() = Unit
+                    override fun refresh() = Unit
+                    override fun openSettings() = Unit
+                },
+            )
+            val base = "immichframe/integration"
+            try {
+                assertTrue(client.start())
+                val config = broker.awaitPublication(
+                    "homeassistant/image/immichframe_integration/current_photo_image/config")
+                assertEquals("$base/photo/image", JSONObject(config.payload).getString("image_topic"))
+                broker.awaitPublication("$base/availability")
+
+                client.publishPhotoImage("jpeg-bytes".toByteArray())
+                val image = broker.awaitPublication("$base/photo/image")
+                assertEquals("jpeg-bytes", image.payload)
+                assertTrue(image.retained)
+
+                broker.publish("homeassistant/status", "online", retained = true)
+                assertEquals("jpeg-bytes", broker.awaitPublication("$base/photo/image").payload)
+            } finally {
+                client.stop()
+            }
+        }
+    }
+
     /** Bounded, loopback-only MQTT 3.1.1 peer, not a mock of the client's transport/callbacks.
      * Implements only CONNECT, SUBSCRIBE, QoS 0/1 PUBLISH, PING, and disconnect for this test.
      */

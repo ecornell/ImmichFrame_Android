@@ -99,9 +99,40 @@ class RemoteControlTest {
         )
         assertFalse(MqttPayloads.state(settings, RemoteFrameState(currentPhoto = photo)).keys.any { "/photo/" in it })
         assertEquals(
-            mapOf("$base/photo/state" to "", "$base/photo/taken_at" to "", "$base/photo/attributes" to ""),
+            mapOf(
+                "$base/photo/state" to "", "$base/photo/taken_at" to "", "$base/photo/attributes" to "",
+                "$base/photo/image" to "",
+            ),
             MqttPayloads.photoCleanup(settings),
         )
+        // The image entity follows photo reporting, whatever its own setting.
+        val imageOnly = settings.copy(photoImage = PhotoImageMode.THUMBNAIL)
+        assertEquals("", MqttPayloads.discovery(imageOnly, "1.2.3")[IMAGE_CONFIG])
+    }
+
+    @Test fun photoImageEntityIsOptInAndClearedWhenOff() {
+        val off = MqttSettings("tcp://broker:1883", "", "", "0123456789abcdef")
+        val base = off.baseTopic
+        assertEquals(PhotoImageMode.OFF, off.photoImage)
+        assertEquals("", MqttPayloads.discovery(off, "1.2.3")[IMAGE_CONFIG])
+        // Reporting the photo but not its image clears only a previously published image.
+        assertEquals(mapOf("$base/photo/image" to ""), MqttPayloads.photoCleanup(off))
+
+        for (mode in listOf(PhotoImageMode.BLURRED, PhotoImageMode.THUMBNAIL)) {
+            val on = off.copy(photoImage = mode)
+            val config = JSONObject(MqttPayloads.discovery(on, "1.2.3").getValue(IMAGE_CONFIG))
+            assertEquals("immichframe_0123456789abcdef_current_photo_image", config.getString("unique_id"))
+            assertEquals("$base/photo/image", config.getString("image_topic"))
+            assertEquals("image/jpeg", config.getString("content_type"))
+            assertTrue(MqttPayloads.photoCleanup(on).isEmpty())
+        }
+    }
+
+    @Test fun photoImageModeParsesStoredValuesAndDefaultsToOff() {
+        assertEquals(PhotoImageMode.THUMBNAIL, PhotoImageMode.parse("THUMBNAIL"))
+        assertEquals(PhotoImageMode.BLURRED, PhotoImageMode.parse("BLURRED"))
+        assertEquals(PhotoImageMode.OFF, PhotoImageMode.parse(null))
+        assertEquals(PhotoImageMode.OFF, PhotoImageMode.parse("thumbnail"))
     }
 
     @Test fun retainedCommandsAreRejectedButHomeAssistantBirthIsAccepted() {
@@ -130,5 +161,9 @@ class RemoteControlTest {
         assertTrue(limits.allow("three", 1))
         // "one" was the least recently used entry and was evicted.
         assertTrue(limits.allow("one", 2))
+    }
+
+    private companion object {
+        const val IMAGE_CONFIG = "homeassistant/image/immichframe_0123456789abcdef/current_photo_image/config"
     }
 }

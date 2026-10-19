@@ -131,7 +131,8 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   is enabled, verify one Home Assistant device, availability, state updates, and that a retained
   action command is ignored. With photo reporting on, verify that the current photo sensor changes
   on the next slide and that `currentPhoto` in the REST state carries metadata (it has only the
-  display strings against a server without `includeMetadata`).
+  display strings against a server without `includeMetadata`). With the photo image on, check the
+  image entity, the payload size on the broker, and crossfade smoothness and memory against *Off*.
 
 ## 4. Qualification and rollback
 

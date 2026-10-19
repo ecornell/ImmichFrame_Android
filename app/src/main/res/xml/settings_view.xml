@@ -181,6 +181,14 @@
             android:key="reportPhotoPeople"
             android:summary="Include the names of people in the photo"
             android:title="Report people names" />
+        <ListPreference
+            android:defaultValue="OFF"
+            android:dependency="reportCurrentPhoto"
+            android:entries="@array/photo_image_entries"
+            android:entryValues="@array/photo_image_values"
+            android:key="reportPhotoImage"
+            android:summary="%s"
+            android:title="Home Assistant photo image" />
         <Preference
             android:key="mqttDeviceIdDisplay"
             android:selectable="false"

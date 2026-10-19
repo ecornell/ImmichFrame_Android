@@ -54,7 +54,11 @@ runbook for those steps.
   only the MQTT subset used here; TLS, broker restart/reconnect, and will delivery need broader
   broker/device qualification. Retained command filtering also has a separate policy unit test.
   `RemoteControlTest` covers the photo discovery ids, `None` for unknown values, and the empty
-  retained payloads that remove the photo entities when reporting is off.
+  retained payloads that remove the photo entities when reporting is off. The opt-in image entity
+  is checked the same way, and a second integration test publishes a retained photo image and
+  receives it again after a Home Assistant birth. The JPEG encoding itself (`PhotoImage`) uses
+  Android bitmaps and is not covered by JVM tests: check the image, its size, and memory on a
+  device.
 
 JUnit results are under `app/build/reports/tests/testDebugUnitTest/`; lint reports are under
 `app/build/reports/`. Building `assembleDebugAndroidTest` compiles instrumentation tests; it does

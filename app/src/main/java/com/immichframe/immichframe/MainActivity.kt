@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -156,6 +157,7 @@ class MainActivity : AppCompatActivity() {
     // Read by slide builds off the main thread; see configureRemoteInterfaces.
     @Volatile private var reportCurrentPhoto = false
     private var reportPhotoPeople = true
+    private var photoImageMode = PhotoImageMode.OFF
     private var lastFrameMetaLeft: FrameMeta? = null
     private var lastFrameMetaRight: FrameMeta? = null
     private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
@@ -319,7 +321,7 @@ class MainActivity : AppCompatActivity() {
     private fun showImage(
         prepared: Helpers.PreparedImage,
         playVideo: Boolean = true,
-        afterPresented: (() -> Unit)? = null,
+        afterPresented: ((RenderedFrame) -> Unit)? = null,
     ) {
         val token = nativeSessionToken
         if (!playbackSession.isCurrent(token)) return
@@ -349,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                         updateUI(rendered, zoomEnabled = serverSettings.imageZoom && !isVideo)
                         handedOff = true
                         if (isVideo && playVideo) startVideo(imageResponse, token) else imageTimer.reschedule()
-                        afterPresented?.invoke()
+                        afterPresented?.invoke(rendered)
                     }
                 }
             } catch (error: Exception) {
@@ -655,7 +657,7 @@ class MainActivity : AppCompatActivity() {
         setOfflineIndicator(false)
         previousImage = currentImage
         currentImage = slide.image
-        reportPhoto(slide.images, CurrentPhoto.SOURCE_SERVER)
+        reportPhoto(slide.images, CurrentPhoto.SOURCE_SERVER, slide.frame.bitmap)
         imageRetryMillis = 5_000L
         // A video poster is not cached for offline startup.
         if (!isVideo) {
@@ -1108,9 +1110,9 @@ class MainActivity : AppCompatActivity() {
             showImage(
                 cachedImage,
                 playVideo = false,
-                afterPresented = {
+                afterPresented = { frame ->
                     currentImage = cachedImage
-                    reportPhoto(listOf(cachedImage), source)
+                    reportPhoto(listOf(cachedImage), source, frame.bitmap)
                     remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
                     val generation = imageGeneration
                     // getNextImage rejects an active imageJob, so wait for the render to finish.
@@ -1146,7 +1148,9 @@ class MainActivity : AppCompatActivity() {
                 stopImageTimer()
                 showImage(
                     safePreviousImage,
-                    afterPresented = { reportPhoto(listOf(safePreviousImage), CurrentPhoto.SOURCE_SERVER) },
+                    afterPresented = { frame ->
+                        reportPhoto(listOf(safePreviousImage), CurrentPhoto.SOURCE_SERVER, frame.bitmap)
+                    },
                 )
                 startImageTimer()
             }
@@ -1550,12 +1554,13 @@ class MainActivity : AppCompatActivity() {
         val deviceId = RemoteIdentity.getOrCreate(prefs)
         val reportPhotoPreference = prefs.getBoolean("reportCurrentPhoto", true)
         reportPhotoPeople = prefs.getBoolean("reportPhotoPeople", true)
+        photoImageMode = PhotoImageMode.parse(prefs.getString("reportPhotoImage", null))
         // Without an interface to report to, the server is not asked for metadata (an album lookup).
         reportCurrentPhoto = reportPhotoPreference && (rpcEnabled || mqttEnabled)
         if (!reportCurrentPhoto) remoteState.update { it.copy(currentPhoto = null) }
         val configurationKey = listOf(
             rpcEnabled, token, mqttEnabled, brokerUri, mqttUsername, mqttPassword, deviceId,
-            reportPhotoPreference,
+            reportPhotoPreference, photoImageMode,
         ).joinToString("\u0000")
         if (configurationKey == remoteConfigurationKey) return
 
@@ -1585,7 +1590,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (mqttEnabled && brokerUri.isNotBlank()) {
             val candidate = MqttControlClient(
-                MqttSettings(brokerUri, mqttUsername, mqttPassword, deviceId, publishPhoto = reportPhotoPreference),
+                MqttSettings(
+                    brokerUri, mqttUsername, mqttPassword, deviceId,
+                    publishPhoto = reportPhotoPreference, photoImage = photoImageMode,
+                ),
                 remoteState,
                 remoteCommands,
             )
@@ -1598,10 +1606,25 @@ class MainActivity : AppCompatActivity() {
         remoteConfigurationKey = configurationKey.takeIf { configured }
     }
 
-    private fun reportPhoto(images: List<Helpers.PreparedImage>, source: String) {
+    /** Call on the main thread right after [frame] is presented, before it can be recycled. */
+    private fun reportPhoto(images: List<Helpers.PreparedImage>, source: String, frame: Bitmap) {
         if (!reportCurrentPhoto) return
         val photo = CurrentPhoto.from(images.map { it.response }, source, reportPhotoPeople, System.currentTimeMillis())
         remoteState.update { it.copy(currentPhoto = photo) }
+
+        val client = mqttClient ?: return
+        val image = PhotoImage.source(photoImageMode, frame, images.last().response) ?: return
+        lifecycleScope.launch(Dispatchers.IO) {
+            val jpeg = try {
+                PhotoImage.encode(image)
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Unable to encode the photo image", e)
+                return@launch
+            } finally {
+                image.recycle()
+            }
+            client.publishPhotoImage(jpeg)
+        }
     }
 
     @Suppress("DEPRECATION")
