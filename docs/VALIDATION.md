@@ -47,6 +47,10 @@ runbook for those steps.
   (fade, queueing on screen, dropping while the display is off, and a `wake` notification turning
   the screen on and off again without starting the slideshow or a manual override) needs a device
   check.
+- `FrameHealthTest`: thermal readings to °C (millidegrees, degrees, unreadable and implausible
+  values), minute rounding, the `health` RPC state, the diagnostic sensor discovery, no
+  temperature entity without a thermal zone, and `None` for unreadable values. The sampler's
+  Android reads (PSS, free memory, Wi-Fi RSSI, IP address) need a device check.
 - `DisplayHoldTest`: a remote display command that differs from Active Times holds until the
   next scheduled change (or the next command without one), an "on" for at most two hours, and
   one that matches clears it.

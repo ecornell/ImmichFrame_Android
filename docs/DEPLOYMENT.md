@@ -140,6 +140,8 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   holds the slideshow, ends on time and on a tap, and that a URL on another host is ignored.
   Turn the display off over RPC during active hours and confirm it stays off past the
   30-second schedule check; turn it back on and confirm the schedule resumes.
+  Confirm `health` in the REST state carries plausible memory, Wi-Fi, IP and boot values, and a
+  temperature on the WF1561 only, matching the monitor's PSS and temperature.
 
 ## 4. Qualification and rollback
 

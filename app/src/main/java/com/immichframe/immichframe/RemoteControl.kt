@@ -17,6 +17,8 @@ data class RemoteFrameState(
     val lastImageSuccessMillis: Long? = null,
     /** Null until a photo is shown with photo reporting enabled. */
     val currentPhoto: CurrentPhoto? = null,
+    /** Null until the first sample, taken only while RPC or MQTT is enabled. */
+    val health: FrameHealth? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("available", true)
@@ -31,6 +33,7 @@ data class RemoteFrameState(
         .put("version", version)
         .put("lastImageSuccessMillis", lastImageSuccessMillis ?: JSONObject.NULL)
         .put("currentPhoto", currentPhoto?.toJson() ?: JSONObject.NULL)
+        .put("health", health?.toJson() ?: JSONObject.NULL)
 }
 
 class RemoteStateStore(initial: RemoteFrameState = RemoteFrameState()) {
@@ -104,7 +107,7 @@ internal class RemoteApiRouter(
                     .put("name", "ImmichFrame")
                     .put("version", state.snapshot().version)
                     .put("apiVersion", 1)
-                    .put("capabilities", JSONArray(listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto", "notify", "camera", "dismiss"))),
+                    .put("capabilities", JSONArray(listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto", "notify", "camera", "dismiss", "health"))),
             )
             method == "GET" && uri == "/api/v1/state" -> ApiResult(200, state.snapshot().toJson())
             method == "PUT" && uri == "/api/v1/display" -> {

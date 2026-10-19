@@ -94,6 +94,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apiService: Helpers.ApiService
     private var rpcServer: RpcHttpServer? = null
     private var mqttClient: MqttControlClient? = null
+    private val healthSampler by lazy { FrameHealthSampler(applicationContext) }
+    private val frameHasTemperature by lazy { healthSampler.hasTemperature }
+    private var healthSampling = false
+    private val healthRunnable = object : Runnable {
+        override fun run() {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val health = try {
+                    healthSampler.sample()
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Health sample failed", e)
+                    return@launch
+                }
+                remoteState.update { it.copy(health = health) }
+            }
+            handler.postDelayed(this, HEALTH_SAMPLE_MILLIS)
+        }
+    }
     private var remoteConfigurationKey: String? = null
     private val remoteState = RemoteStateStore()
     private val remoteCommands: RemoteCommands by lazy {
@@ -1605,6 +1622,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(healthRunnable)
         if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
         handler.removeCallbacks(hideNotificationRunnable)
         if (::framePresenter.isInitialized) framePresenter.clear()
@@ -1677,6 +1695,7 @@ class MainActivity : AppCompatActivity() {
         // Without an interface to report to, the server is not asked for metadata (an album lookup).
         reportCurrentPhoto = reportPhotoPreference && (rpcEnabled || mqttEnabled)
         if (!reportCurrentPhoto) remoteState.update { it.copy(currentPhoto = null) }
+        setHealthSampling(rpcEnabled || mqttEnabled)
         val configurationKey = listOf(
             rpcEnabled, token, mqttEnabled, brokerUri, mqttUsername, mqttPassword, deviceId,
             reportPhotoPreference, photoImageMode,
@@ -1712,6 +1731,7 @@ class MainActivity : AppCompatActivity() {
                 MqttSettings(
                     brokerUri, mqttUsername, mqttPassword, deviceId,
                     publishPhoto = reportPhotoPreference, photoImage = photoImageMode,
+                    hasTemperature = frameHasTemperature,
                 ),
                 remoteState,
                 remoteCommands,
@@ -1723,6 +1743,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         remoteConfigurationKey = configurationKey.takeIf { configured }
+    }
+
+    /** Health is sampled only while an interface can report it. */
+    private fun setHealthSampling(enabled: Boolean) {
+        if (enabled == healthSampling) return
+        healthSampling = enabled
+        handler.removeCallbacks(healthRunnable)
+        if (enabled) handler.post(healthRunnable) else remoteState.update { it.copy(health = null) }
     }
 
     /** Call on the main thread right after [frame] is presented, before it can be recycled. */
@@ -1924,6 +1952,7 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val PREFETCH_AFTER_TRANSITION_MILLIS = 250L
         const val NOTIFICATION_FADE_MILLIS = 300L
+        const val HEALTH_SAMPLE_MILLIS = 60_000L
         const val KEY_DISPLAY_HOLD_ACTIVE = "displayHoldActive"
         const val KEY_DISPLAY_HOLD_UNTIL = "displayHoldUntil"
         const val NOTIFICATION_SCRIM_ALPHA = 200

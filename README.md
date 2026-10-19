@@ -103,6 +103,25 @@ connectivity/offline sensors, presentation mode, and app version. It also publis
 last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
 message. The generated device ID is stable across upgrades as long as application data is retained.
 
+### Health sensors
+
+While RPC or MQTT is enabled, the frame samples its health every minute and reports it as
+`health` in `GET /api/v1/state` and as diagnostic sensors on the MQTT device: **App memory** (this
+app's PSS in MB, the figure the WF1561 monitor alerts on above 120 MB), **Free memory**,
+**Temperature** (the hottest thermal zone, only on frames that expose one: the WF1561 does, the
+W10J does not), **Wi-Fi signal** (dBm), **IP address** (useful on the WF1561, whose address
+changes at reboot), and **Last boot**, **App started** and **Last photo** as timestamps. Values a
+frame cannot read are unknown. Each sensor is published only when its value changes.
+
+```yaml
+# Warn when the frame has not shown a new photo for 15 minutes
+triggers:
+  - trigger: template
+    value_template: >-
+      {{ now() - states('sensor.immichframe_living_room_last_photo') | as_datetime
+         > timedelta(minutes=15) }}
+```
+
 ### Notifications
 
 `notify.<frame>_notification` shows a banner at the top of the screen over the slideshow or web

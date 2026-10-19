@@ -23,6 +23,8 @@ internal data class MqttSettings(
     val discoveryPrefix: String = "homeassistant",
     val publishPhoto: Boolean = true,
     val photoImage: PhotoImageMode = PhotoImageMode.OFF,
+    /** Whether the frame exposes a thermal zone; the W10J has none, so it gets no temperature entity. */
+    val hasTemperature: Boolean = true,
 ) {
     val publishesPhotoImage: Boolean get() = publishPhoto && photoImage != PhotoImageMode.OFF
 
@@ -102,6 +104,22 @@ internal object MqttPayloads {
                 topic to json.put("state_topic", "$base/photo/taken_at").put("device_class", "timestamp")
             },
         )
+        // Health sensors: diagnostics, so Home Assistant lists them apart from the controls.
+        fun health(id: String, name: String, vararg extra: Pair<String, Any>) =
+            config("sensor", id, name).let { (topic, json) ->
+                json.put("state_topic", "$base/health/$id").put("entity_category", "diagnostic")
+                extra.forEach { (key, value) -> json.put(key, value) }
+                topic to json
+            }
+        val measurement = "state_class" to "measurement"
+        entries += health("app_memory", "App memory", "device_class" to "data_size", "unit_of_measurement" to "MB", measurement)
+        entries += health("free_memory", "Free memory", "device_class" to "data_size", "unit_of_measurement" to "MB", measurement)
+        entries += health("wifi_signal", "Wi-Fi signal", "device_class" to "signal_strength", "unit_of_measurement" to "dBm", measurement)
+        entries += health("ip_address", "IP address", "icon" to "mdi:ip-network")
+        entries += health("last_boot", "Last boot", "device_class" to "timestamp")
+        entries += health("app_started", "App started", "device_class" to "timestamp")
+        entries += health("last_photo", "Last photo", "device_class" to "timestamp")
+        val temperature = health("temperature", "Temperature", "device_class" to "temperature", "unit_of_measurement" to "°C", measurement)
         val image = config("image", "current_photo_image", "Current photo image").let { (topic, json) ->
             topic to json.put("image_topic", "$base/photo/image").put("content_type", PhotoImage.CONTENT_TYPE)
         }
@@ -109,7 +127,23 @@ internal object MqttPayloads {
         // An empty retained config removes the entity, so turning reporting off leaves none behind.
         return configs + photoEntries.associate { (topic, json) ->
             topic to if (settings.publishPhoto) json.toString() else ""
-        } + (image.first to if (settings.publishesPhotoImage) image.second.toString() else "")
+        } + (image.first to if (settings.publishesPhotoImage) image.second.toString() else "") +
+            (temperature.first to if (settings.hasTemperature) temperature.second.toString() else "")
+    }
+
+    /** Health topics are only part of the state once the frame has been sampled. */
+    fun healthState(settings: MqttSettings, health: FrameHealth, lastPhotoMillis: Long?): Map<String, String> {
+        val base = "${settings.baseTopic}/health"
+        return buildMap {
+            put("$base/app_memory", health.appMemoryMb?.toString() ?: PAYLOAD_NONE)
+            put("$base/free_memory", health.systemMemoryFreeMb?.toString() ?: PAYLOAD_NONE)
+            put("$base/wifi_signal", health.wifiSignalDbm?.toString() ?: PAYLOAD_NONE)
+            put("$base/ip_address", health.ipAddress ?: PAYLOAD_NONE)
+            put("$base/last_boot", CurrentPhoto.isoUtc(health.bootedAtMillis))
+            put("$base/app_started", CurrentPhoto.isoUtc(health.appStartedAtMillis))
+            put("$base/last_photo", lastPhotoMillis?.let(CurrentPhoto::isoUtc) ?: PAYLOAD_NONE)
+            if (settings.hasTemperature) put("$base/temperature", health.temperatureC?.toString() ?: PAYLOAD_NONE)
+        }
     }
 
     /** Photo topics are only part of the state once a photo has been shown. */
@@ -148,7 +182,8 @@ internal object MqttPayloads {
             "$base/offline_fallback/state" to if (state.offlineFallback) "ON" else "OFF",
             "$base/presentation_mode/state" to state.presentationMode,
             "$base/version/state" to state.version,
-        ) + (state.currentPhoto?.takeIf { settings.publishPhoto }?.let { photoState(settings, it) } ?: emptyMap())
+        ) + (state.currentPhoto?.takeIf { settings.publishPhoto }?.let { photoState(settings, it) } ?: emptyMap()) +
+            (state.health?.let { healthState(settings, it, state.lastImageSuccessMillis) } ?: emptyMap())
     }
 }
 
@@ -203,10 +238,11 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
-                // Discovery + availability + state is about 27 QoS-1 messages. Paho's default of ten
+                // Discovery + availability + state is about 50 QoS-1 messages. Paho's default of ten
                 // can drop the tail of that burst before acknowledgements arrive, especially
-                // when a retained Home Assistant birth triggers another snapshot at connect.
-                maxInflight = 64
+                // when a retained Home Assistant birth triggers a second snapshot at connect, so
+                // leave room for two bursts.
+                maxInflight = 128
                 maxReconnectDelay = 120_000
                 isHttpsHostnameVerificationEnabled = true
                 if (settings.username.isNotBlank()) userName = settings.username
