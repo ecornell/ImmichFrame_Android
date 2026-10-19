@@ -3,8 +3,16 @@ package com.immichframe.immichframe
 import org.json.JSONException
 import org.json.JSONObject
 
-/** A message shown over the slideshow for a while, sent from Home Assistant or the RPC API. */
-data class FrameNotification(val message: String, val title: String?, val durationSeconds: Int) {
+/**
+ * A message shown over the slideshow for a while, sent from Home Assistant or the RPC API. With
+ * [wake], a frame whose display is off turns the screen on to show it instead of dropping it.
+ */
+data class FrameNotification(
+    val message: String,
+    val title: String?,
+    val durationSeconds: Int,
+    val wake: Boolean = false,
+) {
     companion object {
         const val DEFAULT_SECONDS = 10
         const val MIN_SECONDS = 3
@@ -14,8 +22,8 @@ data class FrameNotification(val message: String, val title: String?, val durati
 
         /**
          * Home Assistant's MQTT notify entity publishes only the message text, so a plain payload
-         * is the message. A JSON object adds a title and duration (via mqtt.publish, or a message
-         * that is itself JSON).
+         * is the message. A JSON object adds a title, duration and wake (via mqtt.publish, or a
+         * message that is itself JSON).
          */
         fun parse(payload: String): FrameNotification? {
             val text = payload.trim()
@@ -26,7 +34,7 @@ data class FrameNotification(val message: String, val title: String?, val durati
                     // Not JSON after all: show it as written.
                 }
             }
-            return create(text, null, null)
+            return create(text, null, null, false)
         }
 
         /** Null without a non-blank string "message". */
@@ -34,16 +42,22 @@ data class FrameNotification(val message: String, val title: String?, val durati
             val message = json.opt("message") as? String ?: return null
             val title = json.opt("title") as? String
             val duration = (json.opt("duration") as? Number)?.toInt()
-            return create(message, title, duration)
+            return create(message, title, duration, json.opt("wake") == true)
         }
 
-        private fun create(message: String, title: String?, durationSeconds: Int?): FrameNotification? {
+        private fun create(
+            message: String,
+            title: String?,
+            durationSeconds: Int?,
+            wake: Boolean,
+        ): FrameNotification? {
             val body = message.trim().take(MAX_MESSAGE)
             if (body.isEmpty()) return null
             return FrameNotification(
                 message = body,
                 title = title?.trim()?.take(MAX_TITLE)?.takeIf(String::isNotEmpty),
                 durationSeconds = (durationSeconds ?: DEFAULT_SECONDS).coerceIn(MIN_SECONDS, MAX_SECONDS),
+                wake = wake,
             )
         }
     }

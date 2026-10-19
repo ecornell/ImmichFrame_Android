@@ -134,7 +134,8 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   display strings against a server without `includeMetadata`). With the photo image on, check the
   image entity, the payload size on the broker, and crossfade smoothness and memory against *Off*. Send
   one notification and confirm the banner is readable; send another with the display off and
-  confirm it is dropped.
+  confirm it is dropped. Send one with `"wake": true` while the display is off and confirm the
+  banner shows on a black screen, the slideshow does not start, and the screen turns off again.
 
 ## 4. Qualification and rollback
 

@@ -119,20 +119,6 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
-        <!-- Home Assistant / RPC notifications; see MainActivity.showNotification. -->
-        <TextView
-            android:id="@+id/txtNotification"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top|center_horizontal"
-            android:layout_margin="24dp"
-            android:ellipsize="end"
-            android:gravity="center"
-            android:maxLines="6"
-            android:textColor="@android:color/white"
-            android:textSize="22sp"
-            android:visibility="gone" />
-
         <View
             android:id="@+id/btnPrevious"
             android:layout_width="125dp"
@@ -171,6 +157,21 @@
             android:layout_height="match_parent"
             android:alpha="0"
             android:background="#000000"
+            android:visibility="gone" />
+
+        <!-- Home Assistant / RPC notifications; see MainActivity.showNotification. Above dimOverlay so a
+             notification that wakes a sleeping frame shows on the black screen. -->
+        <TextView
+            android:id="@+id/txtNotification"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_margin="24dp"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="6"
+            android:textColor="@android:color/white"
+            android:textSize="22sp"
             android:visibility="gone" />
     </FrameLayout>
 </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>

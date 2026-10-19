@@ -1,7 +1,9 @@
 package com.immichframe.immichframe
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrameNotificationTest {
@@ -17,6 +19,13 @@ class FrameNotificationTest {
             FrameNotification("Front door open", "Security", 30),
             FrameNotification.parse("""{"message":"Front door open","title":"Security","duration":30}"""),
         )
+    }
+
+    @Test fun onlyAJsonTrueWakesTheScreen() {
+        assertTrue(FrameNotification.parse("""{"message":"Leak in the basement","wake":true}""")!!.wake)
+        assertFalse(FrameNotification.parse("""{"message":"a","wake":"true"}""")!!.wake)
+        assertFalse(FrameNotification.parse("""{"message":"a"}""")!!.wake)
+        assertFalse(FrameNotification.parse("wake")!!.wake)
     }
 
     @Test fun invalidJsonIsShownAsWritten() {

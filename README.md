@@ -113,7 +113,15 @@ Home Assistant's MQTT notify entity forwards only the message text. For a title 
 `immichframe/<device-id>/notify` or the RPC `POST /api/v1/actions/notify` shown above:
 `{"message": "Front door open", "title": "Security", "duration": 30}`. Messages are cut at 500
 characters and titles at 100. Notifications show one at a time; a burst keeps only the newest
-three. While the display is off, notifications are dropped rather than waking the screen.
+three.
+
+While the display is off (active times, Home Assistant, or RPC), a notification is dropped unless
+it has `"wake": true`. A waking notification turns the screen on and shows the banner on a black
+screen, then the screen turns off again once no notification is left. The slideshow does not
+start, and the active-times schedule and the display state reported to Home Assistant do not
+change. Notifications are best effort: one sent while the frame is offline, reconnecting, or
+running as a screensaver is lost, and Home Assistant gets no confirmation that it was shown, so
+keep alerts that matter on your phone.
 
 With **Report current photo** on (the default once RPC or MQTT is enabled), the frame also reports
 the photo on screen. It asks the server for unformatted metadata (`includeMetadata=true`, ImmichFrame

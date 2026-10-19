@@ -79,6 +79,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtNotification: TextView
     private val notifications = NotificationQueue()
     private var notificationShowing = false
+    // The screen is on only to show notifications; the frame stays inactive behind them.
+    private var notificationWoke = false
     private val hideNotificationRunnable = Runnable { hideNotification() }
     private lateinit var btnPrevious: View
     private lateinit var btnPause: View
@@ -1302,6 +1304,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setFrameActive(active: Boolean) {
         remoteState.update { it.copy(displayActive = active) }
+        // Any explicit display change supersedes a notification wake.
+        notificationWoke = false
         if (!active) clearNotifications()
         if (active) {
             isFrameInactive = false
@@ -1346,29 +1350,55 @@ class MainActivity : AppCompatActivity() {
                 visibility = View.VISIBLE
                 alpha = 0.99f
             }
-            val lp = window.attributes
-            lp.screenBrightness = 0f
-            window.attributes = lp
-            // Stop forcing the screen to stay on and allow it to power off
-            window.clearFlags(
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                        or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-            )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                setShowWhenLocked(false)
-                setTurnScreenOn(false)
-            }
             // Wake the device back up at the next scheduled active time
             scheduleWakeAlarm()
-            // Actively turn the screen off and sleep the device (requires device admin)
-            lockDeviceIfPossible()
+            powerDownScreen()
         }
+    }
+
+    /** Lets the screen turn off, and actively sleeps the device when device admin is enabled. */
+    private fun powerDownScreen() {
+        val lp = window.attributes
+        lp.screenBrightness = 0f
+        window.attributes = lp
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false)
+            setTurnScreenOn(false)
+        }
+        lockDeviceIfPossible()
+    }
+
+    /**
+     * Turns the screen on over the black dim overlay for a notification, leaving the frame
+     * inactive: no slideshow, schedule or remote display state changes. [showNextNotification]
+     * powers the screen down again once the queue is empty.
+     */
+    private fun wakeForNotification() {
+        notificationWoke = true
+        wakeScreen()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+        )
+        val lp = window.attributes
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = lp
     }
 
     private fun onScreenTurnedOn() {
         // Manual power-button override: when the schedule has put the frame to sleep and the
         // user turns the screen on, temporarily show the frame without forcing it to stay on.
-        if (isFrameInactive == true && !isManualOverride) {
+        // A screen turned on for a notification is not a manual wake.
+        if (isFrameInactive == true && !isManualOverride && !notificationWoke) {
             isManualOverride = true
             showFrameTemporarily()
         }
@@ -1672,9 +1702,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showNotification(notification: FrameNotification) {
         if (!::txtNotification.isInitialized) return
-        if (isFrameInactive == true) {
-            Log.i("MainActivity", "Dropping a notification while the display is off")
-            return
+        if (isFrameInactive == true && !notificationWoke) {
+            if (!notification.wake) {
+                Log.i("MainActivity", "Dropping a notification while the display is off")
+                return
+            }
+            wakeForNotification()
         }
         notifications.offer(notification)?.let { Log.i("MainActivity", "Dropped an older queued notification") }
         if (!notificationShowing) showNextNotification()
@@ -1684,6 +1717,10 @@ class MainActivity : AppCompatActivity() {
         val next = notifications.poll()
         if (next == null) {
             notificationShowing = false
+            if (notificationWoke) {
+                notificationWoke = false
+                if (isFrameInactive == true) powerDownScreen()
+            }
             return
         }
         notificationShowing = true
