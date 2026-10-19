@@ -23,6 +23,7 @@ class MqttControlClientIntegrationTest {
         TestBroker().use { broker ->
             val state = RemoteStateStore(RemoteFrameState(version = "integration"))
             val next = CountDownLatch(1)
+            val notifications = LinkedBlockingQueue<FrameNotification>()
             val client = MqttControlClient(
                 MqttSettings("tcp://127.0.0.1:${broker.port}", "", "", "integration"),
                 state,
@@ -35,6 +36,7 @@ class MqttControlClientIntegrationTest {
                     override fun previous() = Unit
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
+                    override fun notify(notification: FrameNotification) { notifications.put(notification) }
                 },
             )
             val base = "immichframe/integration"
@@ -65,6 +67,8 @@ class MqttControlClientIntegrationTest {
                 assertEquals(listOf("$base/brightness/state"), broker.topicsThrough("$base/brightness/state"))
                 broker.publish("$base/action/next", "PRESS")
                 assertTrue("next command was not delivered", next.await(5, TimeUnit.SECONDS))
+                broker.publish("$base/notify", "Washer done")
+                assertEquals("Washer done", notifications.poll(5, TimeUnit.SECONDS)?.message)
 
                 broker.publish("homeassistant/status", "online", retained = true)
                 assertTrue(broker.awaitPublication(discovery).retained)
@@ -98,6 +102,7 @@ class MqttControlClientIntegrationTest {
                     override fun previous() = Unit
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
+                    override fun notify(notification: FrameNotification) = Unit
                 },
             )
             val base = "immichframe/integration"

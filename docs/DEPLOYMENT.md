@@ -132,7 +132,9 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   action command is ignored. With photo reporting on, verify that the current photo sensor changes
   on the next slide and that `currentPhoto` in the REST state carries metadata (it has only the
   display strings against a server without `includeMetadata`). With the photo image on, check the
-  image entity, the payload size on the broker, and crossfade smoothness and memory against *Off*.
+  image entity, the payload size on the broker, and crossfade smoothness and memory against *Off*. Send
+  one notification and confirm the banner is readable; send another with the display off and
+  confirm it is dropped.
 
 ## 4. Qualification and rollback
 

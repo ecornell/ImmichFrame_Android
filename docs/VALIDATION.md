@@ -39,6 +39,11 @@ runbook for those steps.
 - `ImageResponseTest`: a metadata-only response (server `includeImage=false`) requires fetching
   the raw preview bytes by asset id, while an older server's inline Base64 image is still used.
   Requested metadata parses, and its absence (older servers) leaves it null.
+- `FrameNotificationTest`: plain, JSON, and malformed notification payloads, missing messages,
+  duration bounds and text limits, and the queue that keeps only the newest notifications.
+  `RemoteControlTest` covers the RPC notify route and the notify discovery entry, and the MQTT
+  integration test delivers a notification published to the notify topic. The banner itself
+  (fade, queueing on screen, dropping while the display is off) needs a device check.
 - `CurrentPhotoTest`: the reported photo for single, split, video and offline-cache slides,
   people removed when not reported, and `currentPhoto` in the RPC state.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,

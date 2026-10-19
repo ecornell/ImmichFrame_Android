@@ -10,6 +10,7 @@ class RemoteControlTest {
     private class RecordingCommands(private val state: RemoteStateStore) : RemoteCommands {
         var nextCount = 0
         var refreshCount = 0
+        val notifications = mutableListOf<FrameNotification>()
         override fun setDisplayActive(active: Boolean) { state.update { it.copy(displayActive = active) } }
         override fun setPaused(paused: Boolean) { state.update { it.copy(paused = paused) } }
         override fun togglePaused() = setPaused(!state.snapshot().paused)
@@ -18,6 +19,7 @@ class RemoteControlTest {
         override fun previous() = Unit
         override fun refresh() { refreshCount++ }
         override fun openSettings() = Unit
+        override fun notify(notification: FrameNotification) { notifications += notification }
     }
 
     @Test fun routesVersionedStateAndIdempotentControls() {
@@ -34,6 +36,19 @@ class RemoteControlTest {
         assertEquals(0.4f, state.snapshot().brightness!!, 0.001f)
         assertEquals(200, router.route("POST", "/api/v1/actions/next", "{}").status)
         assertEquals(1, commands.nextCount)
+    }
+
+    @Test fun notifyRouteShowsAValidNotificationAndRejectsOthers() {
+        val state = RemoteStateStore()
+        val commands = RecordingCommands(state)
+        val router = RemoteApiRouter(state, commands)
+
+        assertEquals(200, router.route("POST", "/api/v1/actions/notify", """{"message":"Washer done","title":"Laundry"}""").status)
+        assertEquals(FrameNotification("Washer done", "Laundry", FrameNotification.DEFAULT_SECONDS), commands.notifications.single())
+        assertEquals(400, router.route("POST", "/api/v1/actions/notify", "{}").status)
+        assertEquals(400, router.route("POST", "/api/v1/actions/notify", "Washer done").status)
+        assertEquals(1, commands.notifications.size)
+        assertTrue(router.route("GET", "/api/v1/info", null).json.toString().contains("\"notify\""))
     }
 
     @Test fun rejectsMalformedAndOutOfRangeInputs() {
@@ -56,6 +71,9 @@ class RemoteControlTest {
 
         assertTrue(discovery.keys.any { it.contains("/switch/") && it.endsWith("/display/config") })
         assertTrue(discovery.keys.any { it.contains("/button/") && it.endsWith("/next/config") })
+        val notify = JSONObject(discovery.getValue("homeassistant/notify/immichframe_0123456789abcdef/notification/config"))
+        assertEquals("immichframe/0123456789abcdef/notify", notify.getString("command_topic"))
+        assertEquals("immichframe_0123456789abcdef_notification", notify.getString("unique_id"))
         assertTrue(joined.contains("immichframe_0123456789abcdef_display"))
         assertFalse(joined.contains("top-secret"))
         assertFalse(joined.contains("frame-user"))

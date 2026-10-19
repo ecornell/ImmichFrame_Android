@@ -25,6 +25,7 @@ class RpcHttpServerIntegrationTest {
                 override fun previous() = Unit
                 override fun refresh() = Unit
                 override fun openSettings() = Unit
+                override fun notify(notification: FrameNotification) = Unit
             },
             hostname = "127.0.0.1",
             port = 0,

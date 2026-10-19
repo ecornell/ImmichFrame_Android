@@ -69,6 +69,9 @@ internal object MqttPayloads {
                 topic to json.put("command_topic", "$base/action/$id").put("payload_press", "PRESS")
             }
         }
+        entries += config("notify", "notification", "Notification").let { (topic, json) ->
+            topic to json.put("command_topic", "$base/notify")
+        }
         entries += config("binary_sensor", "server_connected", "Server connected").let { (topic, json) ->
             topic to json.put("state_topic", "$base/server_connected/state").put("payload_on", "ON").put("payload_off", "OFF")
                 .put("device_class", "connectivity")
@@ -194,7 +197,7 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
-                // Discovery + availability + state is about 25 QoS-1 messages. Paho's default of ten
+                // Discovery + availability + state is about 26 QoS-1 messages. Paho's default of ten
                 // can drop the tail of that burst before acknowledgements arrive, especially
                 // when a retained Home Assistant birth triggers another snapshot at connect.
                 maxInflight = 64
@@ -281,9 +284,9 @@ internal class MqttControlClient(
                 arrayOf(
                     "$base/display/set", "$base/playback/set", "$base/brightness/set",
                     "$base/action/next", "$base/action/previous", "$base/action/refresh",
-                    "homeassistant/status",
+                    "$base/notify", "homeassistant/status",
                 ),
-                intArrayOf(1, 1, 1, 1, 1, 1, 0),
+                intArrayOf(1, 1, 1, 1, 1, 1, 1, 0),
             )
             publishDiscoveryAndState()
         }.onFailure { Log.w(TAG, "MQTT setup failed", it) }
@@ -319,6 +322,7 @@ internal class MqttControlClient(
             "$base/action/next" -> if (payload == "PRESS") commands.next()
             "$base/action/previous" -> if (payload == "PRESS") commands.previous()
             "$base/action/refresh" -> if (payload == "PRESS") commands.refresh()
+            "$base/notify" -> FrameNotification.parse(rawPayload)?.let(commands::notify)
         }
     }
 

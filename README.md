@@ -55,6 +55,9 @@ curl -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json"
   -d '{"brightness":0.5}' http://FRAME-IP:53287/api/v1/brightness
 curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{}' http://FRAME-IP:53287/api/v1/actions/next
+curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"message":"Washer done","title":"Laundry","duration":20}' \
+  http://FRAME-IP:53287/api/v1/actions/notify
 ```
 
 Home Assistant can poll `/api/v1/state` with its REST integration and call action endpoints with
@@ -87,10 +90,30 @@ Set the secret value to `Bearer TOKEN`, including the `Bearer` prefix.
 For automatic Home Assistant device/entity creation, enable **MQTT**, enter a broker URI such as
 `tcp://HOME-ASSISTANT-IP:1883` (or `ssl://HOST:8883` with a trusted certificate), and provide the
 broker credentials. The frame publishes retained MQTT Discovery definitions for display and
-playback switches, brightness, next/previous/refresh buttons, connectivity/offline sensors,
-presentation mode, and app version. It also publishes a retained availability state with an MQTT
+playback switches, brightness, next/previous/refresh buttons, a notify entity,
+connectivity/offline sensors, presentation mode, and app version. It also publishes a retained availability state with an MQTT
 last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
 message. The generated device ID is stable across upgrades as long as application data is retained.
+
+### Notifications
+
+`notify.<frame>_notification` shows a banner at the top of the screen over the slideshow or web
+page, by default for 10 seconds:
+
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.immichframe_living_room_notification
+data:
+  message: Washer done
+```
+
+Home Assistant's MQTT notify entity forwards only the message text. For a title or a duration
+(3–300 seconds), send a JSON object instead, through `mqtt.publish` to
+`immichframe/<device-id>/notify` or the RPC `POST /api/v1/actions/notify` shown above:
+`{"message": "Front door open", "title": "Security", "duration": 30}`. Messages are cut at 500
+characters and titles at 100. Notifications show one at a time; a burst keeps only the newest
+three. While the display is off, notifications are dropped rather than waking the screen.
 
 With **Report current photo** on (the default once RPC or MQTT is enabled), the frame also reports
 the photo on screen. It asks the server for unformatted metadata (`includeMetadata=true`, ImmichFrame

@@ -64,6 +64,7 @@ interface RemoteCommands {
     fun previous()
     fun refresh()
     fun openSettings()
+    fun notify(notification: FrameNotification)
 }
 
 internal object RemoteIdentity {
@@ -98,7 +99,7 @@ internal class RemoteApiRouter(
                     .put("name", "ImmichFrame")
                     .put("version", state.snapshot().version)
                     .put("apiVersion", 1)
-                    .put("capabilities", listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto")),
+                    .put("capabilities", listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto", "notify")),
             )
             method == "GET" && uri == "/api/v1/state" -> ApiResult(200, state.snapshot().toJson())
             method == "PUT" && uri == "/api/v1/display" -> {
@@ -128,6 +129,12 @@ internal class RemoteApiRouter(
             method == "POST" && uri == "/api/v1/actions/next" -> { commands.next(); ok() }
             method == "POST" && uri == "/api/v1/actions/previous" -> { commands.previous(); ok() }
             method == "POST" && uri == "/api/v1/actions/refresh" -> { commands.refresh(); ok() }
+            method == "POST" && uri == "/api/v1/actions/notify" -> {
+                val notification = objectBody()?.let(FrameNotification::fromJson)
+                    ?: return error(400, "JSON string 'message' is required")
+                commands.notify(notification)
+                ok()
+            }
             uri.startsWith("/api/v1/") -> error(404, "Unknown endpoint")
             else -> error(404, "Not found")
         }

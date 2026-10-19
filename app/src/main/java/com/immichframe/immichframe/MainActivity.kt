@@ -20,8 +20,10 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
 import android.text.SpannableString
+import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
@@ -74,6 +76,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtPhotoInfoRight: TextView
     private lateinit var txtDateTime: TextView
     private lateinit var txtOfflineIndicator: TextView
+    private lateinit var txtNotification: TextView
+    private val notifications = NotificationQueue()
+    private var notificationShowing = false
+    private val hideNotificationRunnable = Runnable { hideNotification() }
     private lateinit var btnPrevious: View
     private lateinit var btnPause: View
     private lateinit var btnNext: View
@@ -118,6 +124,7 @@ class MainActivity : AppCompatActivity() {
             override fun previous() = runOnUiThread { previousAction() }
             override fun refresh() = runOnUiThread { nextAction() }
             override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
+            override fun notify(notification: FrameNotification) = runOnUiThread { showNotification(notification) }
         }
     }
     private var weatherCall: Call<Helpers.Weather>? = null
@@ -252,6 +259,7 @@ class MainActivity : AppCompatActivity() {
         txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
         txtDateTime = findViewById(R.id.txtDateTime)
         txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
+        txtNotification = findViewById(R.id.txtNotification)
         btnPrevious = findViewById(R.id.btnPrevious)
         btnPause = findViewById(R.id.btnPause)
         btnNext = findViewById(R.id.btnNext)
@@ -1294,6 +1302,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setFrameActive(active: Boolean) {
         remoteState.update { it.copy(displayActive = active) }
+        if (!active) clearNotifications()
         if (active) {
             isFrameInactive = false
             cancelWakeAlarm()
@@ -1488,6 +1497,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(hideNotificationRunnable)
         if (::framePresenter.isInitialized) framePresenter.clear()
         if (::videoPlayer.isInitialized) videoPlayer.release()
         destroyWebView()
@@ -1656,6 +1666,75 @@ class MainActivity : AppCompatActivity() {
         webView = null
     }
 
+    /**
+     * Shows [notification] now, or after those already waiting. A frame whose display is off drops
+     * it: the event is stale by the time anyone looks, and waking the screen is the schedule's call.
+     */
+    private fun showNotification(notification: FrameNotification) {
+        if (!::txtNotification.isInitialized) return
+        if (isFrameInactive == true) {
+            Log.i("MainActivity", "Dropping a notification while the display is off")
+            return
+        }
+        notifications.offer(notification)?.let { Log.i("MainActivity", "Dropped an older queued notification") }
+        if (!notificationShowing) showNextNotification()
+    }
+
+    private fun showNextNotification() {
+        val next = notifications.poll()
+        if (next == null) {
+            notificationShowing = false
+            return
+        }
+        notificationShowing = true
+        styleNotification()
+        txtNotification.text = SpannableStringBuilder().apply {
+            next.title?.let { title ->
+                append(title, StyleSpan(Typeface.BOLD), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                append("\n")
+            }
+            append(next.message)
+        }
+        txtNotification.animate().cancel()
+        txtNotification.alpha = 0f
+        txtNotification.visibility = View.VISIBLE
+        txtNotification.animate().alpha(1f).setDuration(NOTIFICATION_FADE_MILLIS).start()
+        handler.removeCallbacks(hideNotificationRunnable)
+        handler.postDelayed(hideNotificationRunnable, next.durationSeconds * 1_000L)
+    }
+
+    // Styled here rather than in applyOverlayStyle, which WebView mode never runs. A fixed dark scrim
+    // keeps the text readable over any photo or web page, whatever the overlay settings.
+    private fun styleNotification() {
+        val density = resources.displayMetrics.density
+        txtNotification.background = GradientDrawable().apply {
+            setColor(Color.argb(NOTIFICATION_SCRIM_ALPHA, 0, 0, 0))
+            cornerRadius = 12 * density
+        }
+        val horizontal = (20 * density).toInt()
+        val vertical = (12 * density).toInt()
+        txtNotification.setPadding(horizontal, vertical, horizontal, vertical)
+        txtNotification.maxWidth = (window.decorView.width.takeIf { it > 0 }
+            ?: resources.displayMetrics.widthPixels) * 7 / 10
+    }
+
+    private fun hideNotification() {
+        txtNotification.animate().cancel()
+        txtNotification.animate().alpha(0f).setDuration(NOTIFICATION_FADE_MILLIS).withEndAction {
+            txtNotification.visibility = View.GONE
+            showNextNotification()
+        }.start()
+    }
+
+    private fun clearNotifications() {
+        if (!::txtNotification.isInitialized) return
+        notifications.clear()
+        handler.removeCallbacks(hideNotificationRunnable)
+        txtNotification.animate().cancel()
+        txtNotification.visibility = View.GONE
+        notificationShowing = false
+    }
+
     private fun applyOverlayStyle() {
         val density = resources.displayMetrics.density
         val horizontal = (12 * density).toInt()
@@ -1689,6 +1768,8 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val PREFETCH_AFTER_TRANSITION_MILLIS = 250L
+        const val NOTIFICATION_FADE_MILLIS = 300L
+        const val NOTIFICATION_SCRIM_ALPHA = 200
         const val PREFETCH_THREAD_PRIORITY = Process.THREAD_PRIORITY_DEFAULT + 4 * Process.THREAD_PRIORITY_LESS_FAVORABLE
 
         /** A single thread builds slides, so a prefetch never runs two decodes at once. */
