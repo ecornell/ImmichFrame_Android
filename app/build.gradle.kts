@@ -31,8 +31,8 @@ android {
         applicationId = "com.immichframe.immichframe"
         minSdk = 23
         targetSdk = 36
-        versionCode = 69
-        versionName = "1.0.69.0"
+        versionCode = 70
+        versionName = "1.0.70.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "ImmichFrame"
         manifestPlaceholders["homeCategory"] = "android.intent.category.HOME"
