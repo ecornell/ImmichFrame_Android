@@ -38,16 +38,23 @@ runbook for those steps.
   background stage halves the blur radius.
 - `ImageResponseTest`: a metadata-only response (server `includeImage=false`) requires fetching
   the raw preview bytes by asset id, while an older server's inline Base64 image is still used.
+  Requested metadata parses, and its absence (older servers) leaves it null.
+- `CurrentPhotoTest`: the reported photo for single, split, video and offline-cache slides,
+  people removed when not reported, and `currentPhoto` in the RPC state.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies
   authentication, state JSON, mutation dispatch, invalid JSON, and oversized-body rejection.
 - `MqttControlClientIntegrationTest`: the real Paho client connects to a bounded loopback-only
   MQTT test peer, publishes retained discovery/state, handles commands, resynchronizes after a
-  retained Home Assistant birth, and publishes offline availability on stop. No broker service,
+  retained Home Assistant birth, and publishes offline availability on stop. It also checks that
+  only changed state topics are sent, that the current photo is published, and that a birth
+  resends the full state. No broker service,
   credentials, extra dependencies, or external network are required. The test peer implements
   only the MQTT subset used here; TLS, broker restart/reconnect, and will delivery need broader
   broker/device qualification. Retained command filtering also has a separate policy unit test.
+  `RemoteControlTest` covers the photo discovery ids, `None` for unknown values, and the empty
+  retained payloads that remove the photo entities when reporting is off.
 
 JUnit results are under `app/build/reports/tests/testDebugUnitTest/`; lint reports are under
 `app/build/reports/`. Building `assembleDebugAndroidTest` compiles instrumentation tests; it does

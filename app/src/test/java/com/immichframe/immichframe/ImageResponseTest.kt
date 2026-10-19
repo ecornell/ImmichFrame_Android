@@ -3,6 +3,7 @@ package com.immichframe.immichframe
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,6 +25,28 @@ class ImageResponseTest {
             Helpers.ImageResponse::class.java,
         )
         assertTrue(response.hasInlineImage)
+    }
+
+    @Test fun requestedMetadataIsParsedAndAbsentMetadataIsNull() {
+        val response = Gson().fromJson(
+            """{"randomImageBase64":"","thumbHashImageBase64":"","photoDate":"07/04/2019","imageLocation":"",
+               "assetId":"8f3c","metadata":{"takenAt":"2019-07-04T22:22:10+00:00","people":["Mom"],
+               "albums":["Summer 2019"],"isFavorite":true,"country":null}}""",
+            Helpers.ImageResponse::class.java,
+        )
+        val metadata = response.metadata!!
+        assertEquals("2019-07-04T22:22:10+00:00", metadata.takenAt)
+        assertEquals(listOf("Mom"), metadata.people)
+        assertEquals(listOf("Summer 2019"), metadata.albums)
+        assertEquals(true, metadata.isFavorite)
+        // Keys an older server never sends stay null rather than taking the Kotlin defaults.
+        assertNull(metadata.description)
+
+        val older = Gson().fromJson(
+            """{"randomImageBase64":"","thumbHashImageBase64":"","photoDate":"","imageLocation":"","assetId":"8f3c"}""",
+            Helpers.ImageResponse::class.java,
+        )
+        assertNull(older.metadata)
     }
 
     @Test fun serverUrlsWithoutASchemeAreRejectedInsteadOfCrashing() {

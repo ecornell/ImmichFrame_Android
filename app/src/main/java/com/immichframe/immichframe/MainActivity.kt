@@ -153,6 +153,9 @@ class MainActivity : AppCompatActivity() {
     // Kept decoded: live responses no longer carry the image as Base64.
     private var previousImage: Helpers.PreparedImage? = null
     private var currentImage: Helpers.PreparedImage? = null
+    // Read by slide builds off the main thread; see configureRemoteInterfaces.
+    @Volatile private var reportCurrentPhoto = false
+    private var reportPhotoPeople = true
     private var lastFrameMetaLeft: FrameMeta? = null
     private var lastFrameMetaRight: FrameMeta? = null
     private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
@@ -381,6 +384,8 @@ class MainActivity : AppCompatActivity() {
     private class BuiltSlide(
         val frame: RenderedFrame,
         val image: Helpers.PreparedImage,
+        /** Every photo on the slide in display order; [image] is the last. */
+        val images: List<Helpers.PreparedImage>,
         val spec: SlideSpec,
         val token: Long,
     )
@@ -607,7 +612,7 @@ class MainActivity : AppCompatActivity() {
             heldImage = pairing.held
         }
         val frame = renderSlide(spec, first, second)
-        return BuiltSlide(frame, second ?: first, spec, token)
+        return BuiltSlide(frame, second ?: first, listOfNotNull(first, second), spec, token)
     }
 
     private fun waitsForPortraitPair(image: Helpers.PreparedImage, layout: String): Boolean =
@@ -620,7 +625,9 @@ class MainActivity : AppCompatActivity() {
      * includeImage and inline the image as Base64, which is still accepted.
      */
     private suspend fun fetchImage(api: Helpers.ApiService, includeVideos: Boolean): Helpers.PreparedImage {
-        val response = api.getImageData(includeVideos, includeImage = false).awaitResponse()
+        val response = api.getImageData(
+            includeVideos, includeImage = false, includeMetadata = reportCurrentPhoto,
+        ).awaitResponse()
         if (!response.isSuccessful) throw IOException("HTTP ${response.code()}: ${response.message()}")
         val info = response.body() ?: throw IOException("Empty image response")
         if (info.hasInlineImage) return Helpers.prepareImage(info)
@@ -648,6 +655,7 @@ class MainActivity : AppCompatActivity() {
         setOfflineIndicator(false)
         previousImage = currentImage
         currentImage = slide.image
+        reportPhoto(slide.images, CurrentPhoto.SOURCE_SERVER)
         imageRetryMillis = 5_000L
         // A video poster is not cached for offline startup.
         if (!isVideo) {
@@ -1092,6 +1100,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPlaybackAfterSettingsLoaded() {
         val cachedImage = currentImage ?: CachedImageStore.readPrepared(applicationContext)
+        val source = if (currentImage == null) CurrentPhoto.SOURCE_CACHE else CurrentPhoto.SOURCE_SERVER
         if (cachedImage != null) {
             val token = nativeSessionToken
             // A lone cached portrait must be usable with no backend available. showImage also
@@ -1101,6 +1110,7 @@ class MainActivity : AppCompatActivity() {
                 playVideo = false,
                 afterPresented = {
                     currentImage = cachedImage
+                    reportPhoto(listOf(cachedImage), source)
                     remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
                     val generation = imageGeneration
                     // getNextImage rejects an active imageJob, so wait for the render to finish.
@@ -1134,7 +1144,10 @@ class MainActivity : AppCompatActivity() {
             val safePreviousImage = previousImage
             if (safePreviousImage != null) {
                 stopImageTimer()
-                showImage(safePreviousImage)
+                showImage(
+                    safePreviousImage,
+                    afterPresented = { reportPhoto(listOf(safePreviousImage), CurrentPhoto.SOURCE_SERVER) },
+                )
                 startImageTimer()
             }
         }
@@ -1535,8 +1548,14 @@ class MainActivity : AppCompatActivity() {
         val mqttUsername = prefs.getString("mqttUsername", "").orEmpty()
         val mqttPassword = prefs.getString("mqttPassword", "").orEmpty()
         val deviceId = RemoteIdentity.getOrCreate(prefs)
+        val reportPhotoPreference = prefs.getBoolean("reportCurrentPhoto", true)
+        reportPhotoPeople = prefs.getBoolean("reportPhotoPeople", true)
+        // Without an interface to report to, the server is not asked for metadata (an album lookup).
+        reportCurrentPhoto = reportPhotoPreference && (rpcEnabled || mqttEnabled)
+        if (!reportCurrentPhoto) remoteState.update { it.copy(currentPhoto = null) }
         val configurationKey = listOf(
             rpcEnabled, token, mqttEnabled, brokerUri, mqttUsername, mqttPassword, deviceId,
+            reportPhotoPreference,
         ).joinToString("\u0000")
         if (configurationKey == remoteConfigurationKey) return
 
@@ -1566,7 +1585,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (mqttEnabled && brokerUri.isNotBlank()) {
             val candidate = MqttControlClient(
-                MqttSettings(brokerUri, mqttUsername, mqttPassword, deviceId),
+                MqttSettings(brokerUri, mqttUsername, mqttPassword, deviceId, publishPhoto = reportPhotoPreference),
                 remoteState,
                 remoteCommands,
             )
@@ -1577,6 +1596,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         remoteConfigurationKey = configurationKey.takeIf { configured }
+    }
+
+    private fun reportPhoto(images: List<Helpers.PreparedImage>, source: String) {
+        if (!reportCurrentPhoto) return
+        val photo = CurrentPhoto.from(images.map { it.response }, source, reportPhotoPeople, System.currentTimeMillis())
+        remoteState.update { it.copy(currentPhoto = photo) }
     }
 
     @Suppress("DEPRECATION")

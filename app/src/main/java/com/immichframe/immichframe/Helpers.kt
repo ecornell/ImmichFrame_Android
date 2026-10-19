@@ -137,12 +137,31 @@ object Helpers {
         val assetId: String? = null,
         val assetType: Int? = null,
         val durationSeconds: Double? = null,
+        // Only when requested with includeMetadata, and only from servers that support it.
+        val metadata: ImageMetadata? = null,
     ) {
         val isVideo: Boolean get() = assetType == ASSET_TYPE_VIDEO && !assetId.isNullOrBlank()
 
         /** False when the client asked to fetch the image bytes separately and the server agreed. */
         val hasInlineImage: Boolean get() = randomImageBase64.isNotEmpty()
     }
+
+    /**
+     * Unformatted details of an asset. Gson leaves absent keys null whatever the declared type, so
+     * every field is nullable.
+     */
+    data class ImageMetadata(
+        val takenAt: String? = null,
+        val timeZone: String? = null,
+        val description: String? = null,
+        val people: List<String>? = null,
+        val albums: List<String>? = null,
+        val city: String? = null,
+        val state: String? = null,
+        val country: String? = null,
+        val isFavorite: Boolean? = null,
+        val immichServerUrl: String? = null,
+    )
 
     // Immich AssetTypeEnum ordinal as serialized by the ImmichFrame server.
     private const val ASSET_TYPE_VIDEO = 1
@@ -228,11 +247,15 @@ object Helpers {
     )
 
     interface ApiService {
-        /** With includeImage=false a supporting server omits the Base64 image; see [getAssetBytes]. */
+        /**
+         * With includeImage=false a supporting server omits the Base64 image; see [getAssetBytes].
+         * Older servers ignore includeMetadata and return no metadata.
+         */
         @GET("api/Asset/RandomImageAndInfo")
         fun getImageData(
             @Query("includeVideos") includeVideos: Boolean,
             @Query("includeImage") includeImage: Boolean,
+            @Query("includeMetadata") includeMetadata: Boolean,
         ): Call<ImageResponse>
 
         /** The raw preview bytes (a video's poster) for [ImageResponse.assetId] with assetType IMAGE. */

@@ -120,7 +120,7 @@ class WidgetProvider : AppWidgetProvider() {
             apiService: Helpers.ApiService,
             callback: (Helpers.ImageResponse?) -> Unit
         ) {
-            apiService.getImageData(includeVideos = false, includeImage = true).enqueue(object : Callback<Helpers.ImageResponse> {
+            apiService.getImageData(includeVideos = false, includeImage = true, includeMetadata = false).enqueue(object : Callback<Helpers.ImageResponse> {
                 override fun onResponse(
                     call: Call<Helpers.ImageResponse>,
                     response: Response<Helpers.ImageResponse>

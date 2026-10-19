@@ -1,5 +1,6 @@
 package com.immichframe.immichframe
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -59,6 +60,48 @@ class RemoteControlTest {
         assertFalse(joined.contains("top-secret"))
         assertFalse(joined.contains("frame-user"))
         assertFalse(joined.contains("ssl://broker"))
+    }
+
+    @Test fun mqttPhotoEntitiesAreDiscoveredAndPublishedOnceAPhotoIsShown() {
+        val settings = MqttSettings("tcp://broker:1883", "", "", "0123456789abcdef")
+        val base = settings.baseTopic
+        val discovery = MqttPayloads.discovery(settings, "1.2.3")
+        val photoConfig = JSONObject(discovery.getValue(
+            "homeassistant/sensor/immichframe_0123456789abcdef/current_photo/config"))
+        assertEquals("immichframe_0123456789abcdef_current_photo", photoConfig.getString("unique_id"))
+        assertEquals("$base/photo/state", photoConfig.getString("state_topic"))
+        assertEquals("$base/photo/attributes", photoConfig.getString("json_attributes_topic"))
+        val takenConfig = JSONObject(discovery.getValue(
+            "homeassistant/sensor/immichframe_0123456789abcdef/photo_taken_at/config"))
+        assertEquals("timestamp", takenConfig.getString("device_class"))
+        assertEquals("immichframe_0123456789abcdef_photo_taken_at", takenConfig.getString("unique_id"))
+
+        assertFalse(MqttPayloads.state(settings, RemoteFrameState()).containsKey("$base/photo/state"))
+        // A cached photo has no asset id or capture time; "None" makes the sensors unknown.
+        val cached = CurrentPhoto.from(
+            listOf(Helpers.ImageResponse("", "", "07/04/2019", "")), CurrentPhoto.SOURCE_CACHE, true, 0L,
+        )
+        val state = MqttPayloads.state(settings, RemoteFrameState(currentPhoto = cached))
+        assertEquals("None", state["$base/photo/state"])
+        assertEquals("None", state["$base/photo/taken_at"])
+        assertEquals("cache", JSONObject(state.getValue("$base/photo/attributes")).getString("source"))
+    }
+
+    @Test fun disabledPhotoReportingRemovesTheEntitiesAndTheLastPhoto() {
+        val settings = MqttSettings("tcp://broker:1883", "", "", "0123456789abcdef", publishPhoto = false)
+        val base = settings.baseTopic
+        val discovery = MqttPayloads.discovery(settings, "1.2.3")
+        assertEquals("", discovery["homeassistant/sensor/immichframe_0123456789abcdef/current_photo/config"])
+        assertEquals("", discovery["homeassistant/sensor/immichframe_0123456789abcdef/photo_taken_at/config"])
+
+        val photo = CurrentPhoto.from(
+            listOf(Helpers.ImageResponse("", "", "", "", assetId = "a1")), CurrentPhoto.SOURCE_SERVER, true, 0L,
+        )
+        assertFalse(MqttPayloads.state(settings, RemoteFrameState(currentPhoto = photo)).keys.any { "/photo/" in it })
+        assertEquals(
+            mapOf("$base/photo/state" to "", "$base/photo/taken_at" to "", "$base/photo/attributes" to ""),
+            MqttPayloads.photoCleanup(settings),
+        )
     }
 
     @Test fun retainedCommandsAreRejectedButHomeAssistantBirthIsAccepted() {

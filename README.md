@@ -92,6 +92,34 @@ presentation mode, and app version. It also publishes a retained availability st
 last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
 message. The generated device ID is stable across upgrades as long as application data is retained.
 
+With **Report current photo** on (the default once RPC or MQTT is enabled), the frame also reports
+the photo on screen. It asks the server for unformatted metadata (`includeMetadata=true`, ImmichFrame
+server newer than 1.0.37.3; older servers send none) and publishes two more entities:
+
+- `sensor.<frame>_current_photo`: state is the asset id; attributes carry `taken_at`, `time_zone`,
+  `photo_date`, `location`, `city`/`state`/`country`, `description`, `people`, `albums`,
+  `favorite`, `account`, `media_type`, `duration`, `layout`, `slots` (every photo of a split
+  slide with its people), `source` (`server`, or `cache` for the offline photo, which has no asset
+  id) and `shown_at`.
+- `sensor.<frame>_photo_taken_at`: the capture time as a `timestamp` sensor.
+
+The same object is `currentPhoto` in `GET /api/v1/state`. Both update only when a slide is
+presented, not when it is prefetched, and keep the last photo while the display is off. Each
+state change publishes only the topics whose payload changed. **Report people names** removes
+`people` everywhere. Turning reporting off removes both entities and clears the last photo from
+the broker. Photo reporting runs in the activity (HOME) mode only, not as a screensaver. People
+and places end up in Home Assistant history, so consider excluding these entities from the
+recorder or InfluxDB:
+
+```yaml
+# Announce when someone is on screen, on either side of a split slide
+trigger:
+  - platform: state
+    entity_id: sensor.immichframe_living_room_current_photo
+condition:
+  - "{{ 'Mom' in (state_attr(trigger.entity_id, 'slots') | map(attribute='people') | sum(start=[])) }}"
+```
+
 Both interfaces are intended only for a trusted LAN. Plain `http://`, `tcp://`, and `ws://` expose commands
 and credentials to the local network; do not port-forward either interface to the internet. Home
 Assistant publishes commands without retention, and the frame also rejects retained command

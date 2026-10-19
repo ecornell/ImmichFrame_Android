@@ -129,7 +129,9 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   MQTT configuration.
 - For remote-control changes, verify authenticated REST state and one idempotent command. When MQTT
   is enabled, verify one Home Assistant device, availability, state updates, and that a retained
-  action command is ignored.
+  action command is ignored. With photo reporting on, verify that the current photo sensor changes
+  on the next slide and that `currentPhoto` in the REST state carries metadata (it has only the
+  display strings against a server without `includeMetadata`).
 
 ## 4. Qualification and rollback
 

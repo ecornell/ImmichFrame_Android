@@ -357,7 +357,7 @@ class ScreenSaverService : DreamService() {
         if (!playbackSession.isCurrent(token) || imageCall?.isExecuted == true ||
             imageJob?.isActive == true || !::apiService.isInitialized
         ) return
-        val call = apiService.getImageData(includeVideos = false, includeImage = true)
+        val call = apiService.getImageData(includeVideos = false, includeImage = true, includeMetadata = false)
         imageCall = call
         call.enqueue(object : Callback<Helpers.ImageResponse> {
             override fun onResponse(

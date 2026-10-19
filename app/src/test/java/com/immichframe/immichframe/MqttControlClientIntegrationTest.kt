@@ -1,5 +1,6 @@
 package com.immichframe.immichframe
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -47,18 +48,30 @@ class MqttControlClientIntegrationTest {
                 broker.publish("$base/display/set", "OFF")
                 assertEquals("OFF", broker.awaitPublication("$base/display/state").payload)
                 assertFalse(state.snapshot().displayActive)
-                // Drain the rest of this state snapshot before the next command.
-                broker.awaitPublication("$base/version/state")
                 broker.publish("$base/brightness/set", "25")
-                assertEquals("25", broker.awaitPublication("$base/brightness/state").payload)
+                // Only changed topics are sent, so the unchanged display state is not resent.
+                assertEquals(listOf("$base/brightness/state"), broker.topicsThrough("$base/brightness/state"))
                 assertEquals(0.25f, state.snapshot().brightness!!, 0.001f)
-                broker.awaitPublication("$base/version/state")
+
+                val photo = CurrentPhoto.from(
+                    listOf(Helpers.ImageResponse("", "", "07/04/2019", "", assetId = "a1")),
+                    CurrentPhoto.SOURCE_SERVER, true, 0L,
+                )
+                state.update { it.copy(currentPhoto = photo) }
+                assertEquals("a1", broker.awaitPublication("$base/photo/state").payload)
+                assertEquals("None", broker.awaitPublication("$base/photo/taken_at").payload)
+                assertEquals("a1", JSONObject(broker.awaitPublication("$base/photo/attributes").payload).getString("asset_id"))
+                broker.publish("$base/brightness/set", "30")
+                assertEquals(listOf("$base/brightness/state"), broker.topicsThrough("$base/brightness/state"))
                 broker.publish("$base/action/next", "PRESS")
                 assertTrue("next command was not delivered", next.await(5, TimeUnit.SECONDS))
 
                 broker.publish("homeassistant/status", "online", retained = true)
                 assertTrue(broker.awaitPublication(discovery).retained)
                 assertEquals("online", broker.awaitPublication("$base/availability").payload)
+                // A Home Assistant restart gets the full state, including unchanged topics.
+                assertEquals("OFF", broker.awaitPublication("$base/display/state").payload)
+                assertTrue(broker.awaitPublication("$base/photo/attributes").retained)
                 client.stop()
                 assertEquals("offline", broker.awaitPublication("$base/availability").payload)
             } finally {
@@ -138,7 +151,8 @@ class MqttControlClientIntegrationTest {
             send(if (retained) 0x31 else 0x30, bytes.toByteArray())
         }
 
-        fun awaitPublication(topic: String): Publication {
+        /** The next publication to [topic], or to any topic when it is null. */
+        fun awaitPublication(topic: String?): Publication {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             while (true) {
                 val remaining = deadline - System.nanoTime()
@@ -147,7 +161,17 @@ class MqttControlClientIntegrationTest {
                     if (worker.isDone) worker.get() // Preserve a broker assertion as the root cause.
                     error("Timed out waiting for $topic")
                 }
-                if (message.topic == topic) return message
+                if (topic == null || message.topic == topic) return message
+            }
+        }
+
+        /** Topics published up to and including the next [topic]. */
+        fun topicsThrough(topic: String): List<String> {
+            val seen = mutableListOf<String>()
+            while (true) {
+                val message = awaitPublication(null)
+                seen += message.topic
+                if (message.topic == topic) return seen
             }
         }
 

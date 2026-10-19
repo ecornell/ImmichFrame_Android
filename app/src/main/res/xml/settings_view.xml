@@ -170,6 +170,17 @@
             android:defaultValue=""
             android:key="mqttPassword"
             android:title="MQTT password" />
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="reportCurrentPhoto"
+            android:summary="Share the date, place, people and albums of the photo on screen over MQTT and the RPC state"
+            android:title="Report current photo" />
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:dependency="reportCurrentPhoto"
+            android:key="reportPhotoPeople"
+            android:summary="Include the names of people in the photo"
+            android:title="Report people names" />
         <Preference
             android:key="mqttDeviceIdDisplay"
             android:selectable="false"

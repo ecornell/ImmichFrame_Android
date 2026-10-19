@@ -20,6 +20,7 @@ internal data class MqttSettings(
     val password: String,
     val deviceId: String,
     val discoveryPrefix: String = "homeassistant",
+    val publishPhoto: Boolean = true,
 ) {
     val baseTopic: String get() = "immichframe/$deviceId"
 }
@@ -79,8 +80,41 @@ internal object MqttPayloads {
         entries += config("sensor", "version", "App version").let { (topic, json) ->
             topic to json.put("state_topic", "$base/version/state")
         }
-        return entries.associate { it.first to it.second.toString() }
+        val photoEntries = listOf(
+            config("sensor", "current_photo", "Current photo").let { (topic, json) ->
+                topic to json.put("state_topic", "$base/photo/state")
+                    .put("json_attributes_topic", "$base/photo/attributes")
+                    .put("icon", "mdi:image")
+            },
+            config("sensor", "photo_taken_at", "Photo taken").let { (topic, json) ->
+                topic to json.put("state_topic", "$base/photo/taken_at").put("device_class", "timestamp")
+            },
+        )
+        val configs = entries.associate { it.first to it.second.toString() }
+        // An empty retained config removes the entity, so turning reporting off leaves none behind.
+        return configs + photoEntries.associate { (topic, json) ->
+            topic to if (settings.publishPhoto) json.toString() else ""
+        }
     }
+
+    /** Photo topics are only part of the state once a photo has been shown. */
+    fun photoState(settings: MqttSettings, photo: CurrentPhoto): Map<String, String> {
+        val base = settings.baseTopic
+        // Home Assistant's MQTT sensor reads the payload "None" as unknown, e.g. a cached photo.
+        return mapOf(
+            "$base/photo/state" to (photo.assetId ?: PAYLOAD_NONE),
+            "$base/photo/taken_at" to (photo.takenAt ?: PAYLOAD_NONE),
+            "$base/photo/attributes" to photo.toJson().toString(),
+        )
+    }
+
+    /** Empty retained payloads clear the last photo from the broker when reporting is off. */
+    fun photoCleanup(settings: MqttSettings): Map<String, String> {
+        val base = settings.baseTopic
+        return listOf("state", "taken_at", "attributes").associate { "$base/photo/$it" to "" }
+    }
+
+    private const val PAYLOAD_NONE = "None"
 
     fun state(settings: MqttSettings, state: RemoteFrameState): Map<String, String> {
         val base = settings.baseTopic
@@ -92,7 +126,7 @@ internal object MqttPayloads {
             "$base/offline_fallback/state" to if (state.offlineFallback) "ON" else "OFF",
             "$base/presentation_mode/state" to state.presentationMode,
             "$base/version/state" to state.version,
-        )
+        ) + (state.currentPhoto?.takeIf { settings.publishPhoto }?.let { photoState(settings, it) } ?: emptyMap())
     }
 }
 
@@ -111,6 +145,9 @@ internal class MqttControlClient(
     private var retryExecutor: ScheduledExecutorService? = null
     private var retryDelayMillis = INITIAL_RETRY_MILLIS
     private val stateListener: (RemoteFrameState) -> Unit = { publishState(it) }
+    // Every state change reaches publishState, so only changed topics are sent: the photo
+    // attributes must not be republished for each brightness tick. Guarded by itself.
+    private val lastPublished = HashMap<String, String>()
 
     fun start(): Boolean {
         if (client != null) return true
@@ -142,7 +179,7 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
-                // Discovery + availability + state is 18 QoS-1 messages. Paho's default of ten
+                // Discovery + availability + state is 23 QoS-1 messages. Paho's default of ten
                 // can drop the tail of that burst before acknowledgements arrive, especially
                 // when a retained Home Assistant birth triggers another snapshot at connect.
                 maxInflight = 64
@@ -241,7 +278,12 @@ internal class MqttControlClient(
         MqttPayloads.discovery(settings, state.snapshot().version).forEach { (topic, payload) ->
             publish(topic, payload, retained = true)
         }
+        if (!settings.publishPhoto) {
+            MqttPayloads.photoCleanup(settings).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
+        }
         publish("${settings.baseTopic}/availability", "online", retained = true)
+        // A reconnect or Home Assistant restart needs the full state again.
+        synchronized(lastPublished) { lastPublished.clear() }
         publishState(state.snapshot())
     }
 
@@ -267,20 +309,29 @@ internal class MqttControlClient(
     }
 
     private fun publishState(frameState: RemoteFrameState) {
-        MqttPayloads.state(settings, frameState).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
+        // Publishing inside the lock keeps two racing updates from reaching the broker out of order.
+        synchronized(lastPublished) {
+            MqttPayloads.state(settings, frameState).forEach { (topic, payload) ->
+                if (lastPublished[topic] == payload) return@forEach
+                // A failed publish is retried with the next change or the next full resend.
+                if (publish(topic, payload, retained = true)) lastPublished[topic] = payload
+            }
+        }
     }
 
-    private fun publish(topic: String, payload: String, retained: Boolean) {
-        if (!running) return
-        val mqtt = client ?: return
-        if (!mqtt.isConnected) return
-        try {
+    private fun publish(topic: String, payload: String, retained: Boolean): Boolean {
+        if (!running) return false
+        val mqtt = client ?: return false
+        if (!mqtt.isConnected) return false
+        return try {
             mqtt.publish(topic, MqttMessage(payload.toByteArray()).apply {
                 qos = 1
                 isRetained = retained
             })
+            true
         } catch (e: MqttException) {
             Log.w(TAG, "MQTT publish failed for $topic", e)
+            false
         }
     }
 
