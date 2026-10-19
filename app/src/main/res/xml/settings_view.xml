@@ -189,6 +189,12 @@
             android:key="reportPhotoImage"
             android:summary="%s"
             android:title="Home Assistant photo image" />
+        <EditTextPreference
+            android:defaultValue=""
+            android:inputType="textUri"
+            android:key="homeAssistantUrl"
+            android:summary="Camera snapshots are fetched only from this address, e.g. http://homeassistant.local:8123"
+            android:title="Home Assistant URL" />
         <Preference
             android:key="mqttDeviceIdDisplay"
             android:selectable="false"

@@ -47,6 +47,11 @@ runbook for those steps.
   (fade, queueing on screen, dropping while the display is off, and a `wake` notification turning
   the screen on and off again without starting the slideshow or a manual override) needs a device
   check.
+- `CameraRequestTest`: camera command parsing, timing bounds, and the origin check that resolves
+  relative snapshot URLs against the Home Assistant URL and rejects every other origin.
+  `RemoteControlTest` covers the camera and dismiss routes and the dismiss button, and the MQTT
+  integration test delivers a camera command and a dismiss press. Fetching, decoding, refresh,
+  replacement, tap-to-dismiss, the held slideshow, and wake need a device check.
 - `CurrentPhotoTest`: the reported photo for single, split, video and offline-cache slides,
   people removed when not reported, and `currentPhoto` in the RPC state.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,

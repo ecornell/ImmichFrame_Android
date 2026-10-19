@@ -11,6 +11,8 @@ class RemoteControlTest {
         var nextCount = 0
         var refreshCount = 0
         val notifications = mutableListOf<FrameNotification>()
+        val cameras = mutableListOf<CameraRequest>()
+        var dismissCount = 0
         override fun setDisplayActive(active: Boolean) { state.update { it.copy(displayActive = active) } }
         override fun setPaused(paused: Boolean) { state.update { it.copy(paused = paused) } }
         override fun togglePaused() = setPaused(!state.snapshot().paused)
@@ -20,6 +22,8 @@ class RemoteControlTest {
         override fun refresh() { refreshCount++ }
         override fun openSettings() = Unit
         override fun notify(notification: FrameNotification) { notifications += notification }
+        override fun showCamera(request: CameraRequest) { cameras += request }
+        override fun dismissOverlays() { dismissCount++ }
     }
 
     @Test fun routesVersionedStateAndIdempotentControls() {
@@ -51,6 +55,18 @@ class RemoteControlTest {
         assertTrue(router.route("GET", "/api/v1/info", null).json.toString().contains("\"notify\""))
     }
 
+    @Test fun cameraAndDismissRoutesDispatchValidCommands() {
+        val state = RemoteStateStore()
+        val commands = RecordingCommands(state)
+        val router = RemoteApiRouter(state, commands)
+
+        assertEquals(200, router.route("POST", "/api/v1/actions/camera", """{"url":"/api/camera_proxy/camera.door?token=t"}""").status)
+        assertEquals("/api/camera_proxy/camera.door?token=t", commands.cameras.single().url)
+        assertEquals(400, router.route("POST", "/api/v1/actions/camera", "{}").status)
+        assertEquals(200, router.route("POST", "/api/v1/actions/dismiss", "{}").status)
+        assertEquals(1, commands.dismissCount)
+    }
+
     @Test fun rejectsMalformedAndOutOfRangeInputs() {
         val state = RemoteStateStore()
         val router = RemoteApiRouter(state, RecordingCommands(state))
@@ -74,6 +90,8 @@ class RemoteControlTest {
         val notify = JSONObject(discovery.getValue("homeassistant/notify/immichframe_0123456789abcdef/notification/config"))
         assertEquals("immichframe/0123456789abcdef/notify", notify.getString("command_topic"))
         assertEquals("immichframe_0123456789abcdef_notification", notify.getString("unique_id"))
+        val dismiss = JSONObject(discovery.getValue("homeassistant/button/immichframe_0123456789abcdef/dismiss/config"))
+        assertEquals("immichframe/0123456789abcdef/action/dismiss", dismiss.getString("command_topic"))
         assertTrue(joined.contains("immichframe_0123456789abcdef_display"))
         assertFalse(joined.contains("top-secret"))
         assertFalse(joined.contains("frame-user"))

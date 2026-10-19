@@ -24,6 +24,8 @@ class MqttControlClientIntegrationTest {
             val state = RemoteStateStore(RemoteFrameState(version = "integration"))
             val next = CountDownLatch(1)
             val notifications = LinkedBlockingQueue<FrameNotification>()
+            val cameras = LinkedBlockingQueue<CameraRequest>()
+            val dismissed = CountDownLatch(1)
             val client = MqttControlClient(
                 MqttSettings("tcp://127.0.0.1:${broker.port}", "", "", "integration"),
                 state,
@@ -37,6 +39,8 @@ class MqttControlClientIntegrationTest {
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
                     override fun notify(notification: FrameNotification) { notifications.put(notification) }
+                    override fun showCamera(request: CameraRequest) { cameras.put(request) }
+                    override fun dismissOverlays() = dismissed.countDown()
                 },
             )
             val base = "immichframe/integration"
@@ -69,6 +73,10 @@ class MqttControlClientIntegrationTest {
                 assertTrue("next command was not delivered", next.await(5, TimeUnit.SECONDS))
                 broker.publish("$base/notify", "Washer done")
                 assertEquals("Washer done", notifications.poll(5, TimeUnit.SECONDS)?.message)
+                broker.publish("$base/camera", """{"url":"/api/camera_proxy/camera.door?token=t","refresh":2}""")
+                assertEquals(2, cameras.poll(5, TimeUnit.SECONDS)?.refreshSeconds)
+                broker.publish("$base/action/dismiss", "PRESS")
+                assertTrue("dismiss was not delivered", dismissed.await(5, TimeUnit.SECONDS))
 
                 broker.publish("homeassistant/status", "online", retained = true)
                 assertTrue(broker.awaitPublication(discovery).retained)
@@ -103,6 +111,8 @@ class MqttControlClientIntegrationTest {
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
                     override fun notify(notification: FrameNotification) = Unit
+                    override fun showCamera(request: CameraRequest) = Unit
+                    override fun dismissOverlays() = Unit
                 },
             )
             val base = "immichframe/integration"

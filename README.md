@@ -123,6 +123,43 @@ change. Notifications are best effort: one sent while the frame is offline, reco
 running as a screensaver is lost, and Home Assistant gets no confirmation that it was shown, so
 keep alerts that matter on your phone.
 
+### Camera snapshots
+
+A camera snapshot can take over the screen, for example when the doorbell rings. Set **Home
+Assistant URL** (such as `http://homeassistant.local:8123`) in the MQTT settings first: the frame
+fetches snapshots only from that address. Use the address the frame itself reaches on the LAN,
+not a Nabu Casa or remote URL; an `https` address needs a certificate the frame trusts. With no
+address, or a wrong one, camera commands are ignored (logged only). A relative URL is resolved against it, an absolute URL
+must have the same scheme, host and port, and anything else is ignored. This keeps anyone who can
+publish to the broker from making the frame fetch other addresses; show other cameras (Frigate,
+for instance) through a Home Assistant camera entity. A camera's `entity_picture` is a relative
+URL with an access token that Home Assistant accepts for at least five minutes, so the frame needs
+no Home Assistant credentials.
+
+```yaml
+alias: Doorbell on the frame
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.doorbell
+    to: "on"
+actions:
+  - action: mqtt.publish
+    data:
+      topic: immichframe/<device-id>/camera
+      payload: >-
+        {{ {"url": state_attr('camera.front_door', 'entity_picture'), "title": "Front door",
+            "duration": 60, "refresh": 2, "wake": true} | to_json }}
+```
+
+The same JSON can go to the RPC `POST /api/v1/actions/camera`. `duration` is 5–300 seconds
+(default 30); `refresh` re-fetches the snapshot every 1–30 seconds for a near-live view (default
+0, a single snapshot); `wake` works as for notifications. A new snapshot replaces the one showing,
+notifications still appear over it, and tapping the screen or pressing the **Dismiss overlay**
+button (`POST /api/v1/actions/dismiss`) ends it and any notifications. If the first snapshot
+cannot be fetched, nothing is shown; a failed refresh keeps the last snapshot. In native mode the
+slideshow holds still underneath (no zoom, video or advancing) without being reported as paused;
+a WebView slideshow keeps running underneath. Like notifications, snapshots are best effort.
+
 With **Report current photo** on (the default once RPC or MQTT is enabled), the frame also reports
 the photo on screen. It asks the server for unformatted metadata (`includeMetadata=true`, ImmichFrame
 server newer than 1.0.37.3; older servers send none) and publishes two more entities:

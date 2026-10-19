@@ -79,8 +79,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtNotification: TextView
     private val notifications = NotificationQueue()
     private var notificationShowing = false
-    // The screen is on only to show notifications; the frame stays inactive behind them.
-    private var notificationWoke = false
+    // The screen is on only to show notifications or a camera; the frame stays inactive behind them.
+    private var overlayWoke = false
+    private lateinit var cameraOverlay: CameraOverlay
     private val hideNotificationRunnable = Runnable { hideNotification() }
     private lateinit var btnPrevious: View
     private lateinit var btnPause: View
@@ -127,6 +128,12 @@ class MainActivity : AppCompatActivity() {
             override fun refresh() = runOnUiThread { nextAction() }
             override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
             override fun notify(notification: FrameNotification) = runOnUiThread { showNotification(notification) }
+            override fun showCamera(request: CameraRequest) = runOnUiThread { startCameraTakeover(request) }
+            override fun dismissOverlays() = runOnUiThread {
+                clearNotifications()
+                if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
+                finishOverlayWake()
+            }
         }
     }
     private var weatherCall: Call<Helpers.Weather>? = null
@@ -262,6 +269,16 @@ class MainActivity : AppCompatActivity() {
         txtDateTime = findViewById(R.id.txtDateTime)
         txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
         txtNotification = findViewById(R.id.txtNotification)
+        val cameraContainer = findViewById<View>(R.id.cameraOverlay)
+        cameraOverlay = CameraOverlay(
+            cameraContainer,
+            findViewById(R.id.cameraImage),
+            findViewById(R.id.cameraCaption),
+            lifecycleScope,
+            maxDimension = { maxOf(window.decorView.width, window.decorView.height, 1) },
+            onEnded = ::onCameraEnded,
+        )
+        cameraContainer.setOnClickListener { cameraOverlay.dismiss() }
         btnPrevious = findViewById(R.id.btnPrevious)
         btnPause = findViewById(R.id.btnPause)
         btnNext = findViewById(R.id.btnNext)
@@ -519,7 +536,8 @@ class MainActivity : AppCompatActivity() {
     private fun getNextImage() {
         val token = nativeSessionToken
         if (!playbackSession.isCurrent(token) || imageJob?.isActive == true ||
-            !::apiService.isInitialized || isFrameInactive == true
+            !::apiService.isInitialized || isFrameInactive == true ||
+            (::cameraOverlay.isInitialized && cameraOverlay.isActive)
         ) return
         val spec = currentSlideSpec()
         if (spec == null) {
@@ -1304,9 +1322,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun setFrameActive(active: Boolean) {
         remoteState.update { it.copy(displayActive = active) }
-        // Any explicit display change supersedes a notification wake.
-        notificationWoke = false
-        if (!active) clearNotifications()
+        // Any explicit display change supersedes a notification or camera wake.
+        overlayWoke = false
+        if (!active) {
+            clearNotifications()
+            if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
+        }
         if (active) {
             isFrameInactive = false
             cancelWakeAlarm()
@@ -1373,12 +1394,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Turns the screen on over the black dim overlay for a notification, leaving the frame
-     * inactive: no slideshow, schedule or remote display state changes. [showNextNotification]
-     * powers the screen down again once the queue is empty.
+     * Turns the screen on over the black dim overlay for a notification or camera, leaving the
+     * frame inactive: no slideshow, schedule or remote display state changes. [finishOverlayWake]
+     * powers the screen down again once neither is showing.
      */
-    private fun wakeForNotification() {
-        notificationWoke = true
+    private fun wakeForOverlay() {
+        overlayWoke = true
         wakeScreen()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -1398,7 +1419,7 @@ class MainActivity : AppCompatActivity() {
         // Manual power-button override: when the schedule has put the frame to sleep and the
         // user turns the screen on, temporarily show the frame without forcing it to stay on.
         // A screen turned on for a notification is not a manual wake.
-        if (isFrameInactive == true && !isManualOverride && !notificationWoke) {
+        if (isFrameInactive == true && !isManualOverride && !overlayWoke) {
             isManualOverride = true
             showFrameTemporarily()
         }
@@ -1527,6 +1548,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
         handler.removeCallbacks(hideNotificationRunnable)
         if (::framePresenter.isInitialized) framePresenter.clear()
         if (::videoPlayer.isInitialized) videoPlayer.release()
@@ -1702,12 +1724,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showNotification(notification: FrameNotification) {
         if (!::txtNotification.isInitialized) return
-        if (isFrameInactive == true && !notificationWoke) {
+        if (isFrameInactive == true && !overlayWoke) {
             if (!notification.wake) {
                 Log.i("MainActivity", "Dropping a notification while the display is off")
                 return
             }
-            wakeForNotification()
+            wakeForOverlay()
         }
         notifications.offer(notification)?.let { Log.i("MainActivity", "Dropped an older queued notification") }
         if (!notificationShowing) showNextNotification()
@@ -1717,10 +1739,7 @@ class MainActivity : AppCompatActivity() {
         val next = notifications.poll()
         if (next == null) {
             notificationShowing = false
-            if (notificationWoke) {
-                notificationWoke = false
-                if (isFrameInactive == true) powerDownScreen()
-            }
+            finishOverlayWake()
             return
         }
         notificationShowing = true
@@ -1761,6 +1780,46 @@ class MainActivity : AppCompatActivity() {
             txtNotification.visibility = View.GONE
             showNextNotification()
         }.start()
+    }
+
+    /** Powers the screen down after an overlay wake once no notification or camera is showing. */
+    private fun finishOverlayWake() {
+        if (!overlayWoke || notificationShowing) return
+        if (::cameraOverlay.isInitialized && cameraOverlay.isActive) return
+        overlayWoke = false
+        if (isFrameInactive == true) powerDownScreen()
+    }
+
+    /**
+     * Shows a camera snapshot full screen. Like a notification, it is dropped while the display is
+     * off unless it asks to wake the screen. Only the configured Home Assistant origin is fetched.
+     */
+    private fun startCameraTakeover(request: CameraRequest) {
+        if (!::cameraOverlay.isInitialized) return
+        val base = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            .getString("homeAssistantUrl", "").orEmpty()
+        val url = CameraRequest.resolve(base, request.url)
+        if (url == null) {
+            Log.w("MainActivity", "Ignoring a camera snapshot outside the configured Home Assistant URL")
+            return
+        }
+        if (isFrameInactive == true && !overlayWoke) {
+            if (!request.wake) {
+                Log.i("MainActivity", "Dropping a camera snapshot while the display is off")
+                return
+            }
+            wakeForOverlay()
+        }
+        // Hold the slideshow underneath: no zoom, no video audio, no advancing (see getNextImage).
+        // The image timer keeps running so the paused state reported to Home Assistant is unchanged.
+        if (::framePresenter.isInitialized) framePresenter.pauseZoom()
+        if (::videoPlayer.isInitialized) videoPlayer.pause()
+        cameraOverlay.show(request, url)
+    }
+
+    private fun onCameraEnded() {
+        if (isImageTimerRunning && isFrameInactive != true && ::videoPlayer.isInitialized) videoPlayer.resume()
+        finishOverlayWake()
     }
 
     private fun clearNotifications() {

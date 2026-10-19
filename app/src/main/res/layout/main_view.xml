@@ -159,6 +159,40 @@
             android:background="#000000"
             android:visibility="gone" />
 
+        <!-- Camera takeover (see CameraOverlay): above dimOverlay so it can wake a sleeping frame,
+             below notifications so they still show over a camera. Tapping it dismisses it. -->
+        <FrameLayout
+            android:id="@+id/cameraOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/black"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/cameraImage"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                tools:ignore="ContentDescription" />
+
+            <TextView
+                android:id="@+id/cameraCaption"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_margin="24dp"
+                android:background="#C8000000"
+                android:paddingLeft="20dp"
+                android:paddingTop="10dp"
+                android:paddingRight="20dp"
+                android:paddingBottom="10dp"
+                android:textColor="@android:color/white"
+                android:textSize="22sp"
+                android:visibility="gone" />
+        </FrameLayout>
+
         <!-- Home Assistant / RPC notifications; see MainActivity.showNotification. Above dimOverlay so a
              notification that wakes a sleeping frame shows on the black screen. -->
         <TextView

@@ -64,7 +64,11 @@ internal object MqttPayloads {
             topic to json.put("command_topic", "$base/brightness/set").put("state_topic", "$base/brightness/state")
                 .put("min", 0).put("max", 100).put("step", 1).put("mode", "slider").put("unit_of_measurement", "%")
         }
-        for ((id, name) in listOf("next" to "Next photo", "previous" to "Previous photo", "refresh" to "Refresh")) {
+        val buttons = listOf(
+            "next" to "Next photo", "previous" to "Previous photo", "refresh" to "Refresh",
+            "dismiss" to "Dismiss overlay",
+        )
+        for ((id, name) in buttons) {
             entries += config("button", id, name).let { (topic, json) ->
                 topic to json.put("command_topic", "$base/action/$id").put("payload_press", "PRESS")
             }
@@ -197,7 +201,7 @@ internal class MqttControlClient(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
-                // Discovery + availability + state is about 26 QoS-1 messages. Paho's default of ten
+                // Discovery + availability + state is about 27 QoS-1 messages. Paho's default of ten
                 // can drop the tail of that burst before acknowledgements arrive, especially
                 // when a retained Home Assistant birth triggers another snapshot at connect.
                 maxInflight = 64
@@ -284,9 +288,9 @@ internal class MqttControlClient(
                 arrayOf(
                     "$base/display/set", "$base/playback/set", "$base/brightness/set",
                     "$base/action/next", "$base/action/previous", "$base/action/refresh",
-                    "$base/notify", "homeassistant/status",
+                    "$base/action/dismiss", "$base/notify", "$base/camera", "homeassistant/status",
                 ),
-                intArrayOf(1, 1, 1, 1, 1, 1, 1, 0),
+                intArrayOf(1, 1, 1, 1, 1, 1, 1, 1, 1, 0),
             )
             publishDiscoveryAndState()
         }.onFailure { Log.w(TAG, "MQTT setup failed", it) }
@@ -322,7 +326,9 @@ internal class MqttControlClient(
             "$base/action/next" -> if (payload == "PRESS") commands.next()
             "$base/action/previous" -> if (payload == "PRESS") commands.previous()
             "$base/action/refresh" -> if (payload == "PRESS") commands.refresh()
+            "$base/action/dismiss" -> if (payload == "PRESS") commands.dismissOverlays()
             "$base/notify" -> FrameNotification.parse(rawPayload)?.let(commands::notify)
+            "$base/camera" -> CameraRequest.parse(rawPayload)?.let(commands::showCamera)
         }
     }
 

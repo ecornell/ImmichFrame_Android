@@ -136,6 +136,8 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   one notification and confirm the banner is readable; send another with the display off and
   confirm it is dropped. Send one with `"wake": true` while the display is off and confirm the
   banner shows on a black screen, the slideshow does not start, and the screen turns off again.
+  With a Home Assistant URL set, send a camera snapshot with `refresh` and confirm it updates,
+  holds the slideshow, ends on time and on a tap, and that a URL on another host is ignored.
 
 ## 4. Qualification and rollback
 
