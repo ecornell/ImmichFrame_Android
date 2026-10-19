@@ -138,6 +138,8 @@ The former WF1561-specific deployment script is disabled because it cannot enfor
   banner shows on a black screen, the slideshow does not start, and the screen turns off again.
   With a Home Assistant URL set, send a camera snapshot with `refresh` and confirm it updates,
   holds the slideshow, ends on time and on a tap, and that a URL on another host is ignored.
+  Turn the display off over RPC during active hours and confirm it stays off past the
+  30-second schedule check; turn it back on and confirm the schedule resumes.
 
 ## 4. Qualification and rollback
 

@@ -9,6 +9,7 @@ import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -30,7 +31,8 @@ internal data class MqttSettings(
 
 internal object MqttPayloads {
     private fun device(settings: MqttSettings, version: String) = JSONObject()
-        .put("identifiers", listOf("immichframe_${settings.deviceId}"))
+        // A JSONArray: Android's org.json would write a Kotlin list as the string "[...]".
+        .put("identifiers", JSONArray().put("immichframe_${settings.deviceId}"))
         .put("name", "ImmichFrame ${settings.deviceId.takeLast(6)}")
         .put("manufacturer", "ImmichFrame")
         .put("model", "Android Frame")

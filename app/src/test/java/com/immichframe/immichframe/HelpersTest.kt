@@ -126,6 +126,23 @@ class HelpersTest {
         assertEquals(calendar(2026, Calendar.AUGUST, 31, 10, 0).timeInMillis, next.timeInMillis)
     }
 
+    @Test fun nextScheduleChangeFindsTheNextTransitionInEitherDirection() {
+        val daily = Helpers.ActiveSchedule(
+            listOf(Helpers.ActiveRule((1..7).toSet(), listOf(Helpers.ActiveRange("07:00", "23:00")))),
+        )
+        // Active at 15:00: the next change is today's end, not tomorrow's start.
+        assertEquals(
+            calendar(2026, Calendar.AUGUST, 24, 23, 0).timeInMillis,
+            Helpers.nextScheduleChange(daily, calendar(2026, Calendar.AUGUST, 24, 15, 0))!!.timeInMillis,
+        )
+        // Inactive at 23:30: the next change is tomorrow's start.
+        assertEquals(
+            calendar(2026, Calendar.AUGUST, 25, 7, 0).timeInMillis,
+            Helpers.nextScheduleChange(daily, calendar(2026, Calendar.AUGUST, 24, 23, 30))!!.timeInMillis,
+        )
+        assertNull(Helpers.nextScheduleChange(Helpers.ActiveSchedule(emptyList()), calendar(2026, Calendar.AUGUST, 24, 15, 0)))
+    }
+
     private fun schedule(day: Int, start: String, end: String) = Helpers.ActiveSchedule(
         listOf(Helpers.ActiveRule(setOf(day), listOf(Helpers.ActiveRange(start, end))))
     )

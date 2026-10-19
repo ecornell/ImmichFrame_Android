@@ -1,6 +1,7 @@
 package com.immichframe.immichframe
 
 import android.content.SharedPreferences
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArrayList
@@ -65,7 +66,8 @@ interface RemoteCommands {
     fun refresh()
     fun openSettings()
     fun notify(notification: FrameNotification)
-    fun showCamera(request: CameraRequest)
+    /** False when the request's URL is outside the configured Home Assistant URL. */
+    fun showCamera(request: CameraRequest): Boolean
     /** Ends a camera takeover and any notifications. */
     fun dismissOverlays()
 }
@@ -102,7 +104,7 @@ internal class RemoteApiRouter(
                     .put("name", "ImmichFrame")
                     .put("version", state.snapshot().version)
                     .put("apiVersion", 1)
-                    .put("capabilities", listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto", "notify", "camera", "dismiss")),
+                    .put("capabilities", JSONArray(listOf("display", "playback", "brightness", "next", "previous", "refresh", "currentPhoto", "notify", "camera", "dismiss"))),
             )
             method == "GET" && uri == "/api/v1/state" -> ApiResult(200, state.snapshot().toJson())
             method == "PUT" && uri == "/api/v1/display" -> {
@@ -141,7 +143,9 @@ internal class RemoteApiRouter(
             method == "POST" && uri == "/api/v1/actions/camera" -> {
                 val request = objectBody()?.let(CameraRequest::fromJson)
                     ?: return error(400, "JSON string 'url' is required")
-                commands.showCamera(request)
+                if (!commands.showCamera(request)) {
+                    return error(400, "url must be on the configured Home Assistant URL")
+                }
                 ok()
             }
             method == "POST" && uri == "/api/v1/actions/dismiss" -> { commands.dismissOverlays(); ok() }

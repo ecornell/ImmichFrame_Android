@@ -1,5 +1,6 @@
 package com.immichframe.immichframe
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,7 +23,11 @@ class RemoteControlTest {
         override fun refresh() { refreshCount++ }
         override fun openSettings() = Unit
         override fun notify(notification: FrameNotification) { notifications += notification }
-        override fun showCamera(request: CameraRequest) { cameras += request }
+        var cameraAccepted = true
+        override fun showCamera(request: CameraRequest): Boolean {
+            cameras += request
+            return cameraAccepted
+        }
         override fun dismissOverlays() { dismissCount++ }
     }
 
@@ -52,7 +57,11 @@ class RemoteControlTest {
         assertEquals(400, router.route("POST", "/api/v1/actions/notify", "{}").status)
         assertEquals(400, router.route("POST", "/api/v1/actions/notify", "Washer done").status)
         assertEquals(1, commands.notifications.size)
-        assertTrue(router.route("GET", "/api/v1/info", null).json.toString().contains("\"notify\""))
+        val capabilities = router.route("GET", "/api/v1/info", null).json.get("capabilities")
+        // On a device a Kotlin list would serialize as one string; the JVM org.json used here
+        // would wrap it either way, so this documents the type rather than catching a regression.
+        assertTrue(capabilities is JSONArray)
+        assertTrue((capabilities as JSONArray).toString().contains("\"notify\""))
     }
 
     @Test fun cameraAndDismissRoutesDispatchValidCommands() {
@@ -63,6 +72,11 @@ class RemoteControlTest {
         assertEquals(200, router.route("POST", "/api/v1/actions/camera", """{"url":"/api/camera_proxy/camera.door?token=t"}""").status)
         assertEquals("/api/camera_proxy/camera.door?token=t", commands.cameras.single().url)
         assertEquals(400, router.route("POST", "/api/v1/actions/camera", "{}").status)
+        // A URL outside the configured Home Assistant URL is refused, not silently dropped.
+        commands.cameraAccepted = false
+        val refused = router.route("POST", "/api/v1/actions/camera", """{"url":"http://other.host/x.jpg"}""")
+        assertEquals(400, refused.status)
+        assertTrue(refused.json.getString("error").contains("Home Assistant URL"))
         assertEquals(200, router.route("POST", "/api/v1/actions/dismiss", "{}").status)
         assertEquals(1, commands.dismissCount)
     }

@@ -39,7 +39,10 @@ class MqttControlClientIntegrationTest {
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
                     override fun notify(notification: FrameNotification) { notifications.put(notification) }
-                    override fun showCamera(request: CameraRequest) { cameras.put(request) }
+                    override fun showCamera(request: CameraRequest): Boolean {
+                        cameras.put(request)
+                        return true
+                    }
                     override fun dismissOverlays() = dismissed.countDown()
                 },
             )
@@ -111,7 +114,7 @@ class MqttControlClientIntegrationTest {
                     override fun refresh() = Unit
                     override fun openSettings() = Unit
                     override fun notify(notification: FrameNotification) = Unit
-                    override fun showCamera(request: CameraRequest) = Unit
+                    override fun showCamera(request: CameraRequest) = true
                     override fun dismissOverlays() = Unit
                 },
             )

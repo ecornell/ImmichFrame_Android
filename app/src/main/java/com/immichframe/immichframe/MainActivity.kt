@@ -48,6 +48,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.WindowCompat
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import okhttp3.HttpUrl
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
@@ -99,7 +100,7 @@ class MainActivity : AppCompatActivity() {
         object : RemoteCommands {
             override fun setDisplayActive(active: Boolean) {
                 remoteState.update { it.copy(displayActive = active) }
-                runOnUiThread { setFrameActive(active) }
+                runOnUiThread { setRemoteDisplayActive(active) }
             }
 
             override fun setPaused(paused: Boolean) = runOnUiThread {
@@ -128,7 +129,11 @@ class MainActivity : AppCompatActivity() {
             override fun refresh() = runOnUiThread { nextAction() }
             override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
             override fun notify(notification: FrameNotification) = runOnUiThread { showNotification(notification) }
-            override fun showCamera(request: CameraRequest) = runOnUiThread { startCameraTakeover(request) }
+            override fun showCamera(request: CameraRequest): Boolean {
+                val url = resolveCameraUrl(request) ?: return false
+                runOnUiThread { startCameraTakeover(request, url) }
+                return true
+            }
             override fun dismissOverlays() = runOnUiThread {
                 clearNotifications()
                 if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
@@ -945,6 +950,11 @@ class MainActivity : AppCompatActivity() {
             handler.post(activeCheckRunnable)
         } else {
             handler.removeCallbacks(activeCheckRunnable)
+            if (!desiredActive(scheduledActive = true)) {
+                // A remote display-off with no schedule to end it holds until turned back on.
+                if (isFrameInactive != true) setFrameActive(false)
+                return
+            }
             if (isFrameInactive != false) {
                 // setFrameActive loads the settings itself (after any dim fade); continuing here
                 // would start a second playback session.
@@ -1305,7 +1315,7 @@ class MainActivity : AppCompatActivity() {
         if (isManualOverride) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
-        val shouldBeActive = Helpers.isActiveNow(schedule, Calendar.getInstance())
+        val shouldBeActive = desiredActive(Helpers.isActiveNow(schedule, Calendar.getInstance()))
 
         if (shouldBeActive && isFrameInactive != false) {
             setFrameActive(true)
@@ -1318,6 +1328,51 @@ class MainActivity : AppCompatActivity() {
                 scheduleWakeAlarm()
             }
         }
+    }
+
+    /**
+     * Turns the display on or off for an RPC or MQTT command. A command that differs from Active
+     * Times is held (see [DisplayHold]), so the 30-second schedule check, onResume and the end of a
+     * manual wake do not undo it.
+     */
+    private fun setRemoteDisplayActive(active: Boolean) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+        val now = Calendar.getInstance()
+        val activeTimes = prefs.getBoolean("activeTimes", false)
+        val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
+        val scheduledActive = !activeTimes || Helpers.isActiveNow(schedule, now)
+        val nextChange = if (activeTimes) Helpers.nextScheduleChange(schedule, now)?.timeInMillis else null
+        writeDisplayHold(DisplayHold.forCommand(active, scheduledActive, nextChange, now.timeInMillis))
+        setFrameActive(active)
+    }
+
+    /** [scheduledActive] adjusted for a remote display hold, dropping the hold once it expires. */
+    private fun desiredActive(scheduledActive: Boolean): Boolean {
+        val hold = readDisplayHold()
+        val (active, remaining) = DisplayHold.resolve(scheduledActive, hold, System.currentTimeMillis())
+        if (remaining != hold) writeDisplayHold(remaining)
+        return active
+    }
+
+    // Persisted so a restart of the HOME app does not undo a remote command.
+    private fun readDisplayHold(): DisplayHold? {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+        if (!prefs.contains(KEY_DISPLAY_HOLD_ACTIVE)) return null
+        return DisplayHold(
+            active = prefs.getBoolean(KEY_DISPLAY_HOLD_ACTIVE, true),
+            untilMillis = prefs.getLong(KEY_DISPLAY_HOLD_UNTIL, -1L).takeIf { it >= 0 },
+        )
+    }
+
+    private fun writeDisplayHold(hold: DisplayHold?) {
+        val editor = PreferenceManager.getDefaultSharedPreferences(applicationContext).edit()
+        if (hold == null) {
+            editor.remove(KEY_DISPLAY_HOLD_ACTIVE).remove(KEY_DISPLAY_HOLD_UNTIL)
+        } else {
+            editor.putBoolean(KEY_DISPLAY_HOLD_ACTIVE, hold.active)
+                .putLong(KEY_DISPLAY_HOLD_UNTIL, hold.untilMillis ?: -1L)
+        }
+        editor.apply()
     }
 
     private fun setFrameActive(active: Boolean) {
@@ -1435,7 +1490,7 @@ class MainActivity : AppCompatActivity() {
             val activeTimes = prefs.getBoolean("activeTimes", false)
             val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
             val shouldBeActive =
-                !activeTimes || Helpers.isActiveNow(schedule, Calendar.getInstance())
+                desiredActive(!activeTimes || Helpers.isActiveNow(schedule, Calendar.getInstance()))
             setFrameActive(shouldBeActive)
         }
     }
@@ -1529,11 +1584,13 @@ class MainActivity : AppCompatActivity() {
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
         // next periodic check.
-        if (isManualOverride) return
+        // A screen turned on for a notification or camera resumes the activity too; the frame
+        // stays as it was behind the overlay.
+        if (isManualOverride || overlayWoke) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         if (prefs.getBoolean("activeTimes", false)) {
             checkActiveTime()
-        } else if (isFrameInactive != false) {
+        } else if (isFrameInactive != false && desiredActive(scheduledActive = true)) {
             // Active Times was turned off while the frame was asleep: restore it and drop any
             // pending wake alarm so disabling the feature fully clears its side effects.
             cancelWakeAlarm()
@@ -1794,15 +1851,17 @@ class MainActivity : AppCompatActivity() {
      * Shows a camera snapshot full screen. Like a notification, it is dropped while the display is
      * off unless it asks to wake the screen. Only the configured Home Assistant origin is fetched.
      */
-    private fun startCameraTakeover(request: CameraRequest) {
-        if (!::cameraOverlay.isInitialized) return
+    /** Null, and logged, when [request] is outside the configured Home Assistant URL. */
+    private fun resolveCameraUrl(request: CameraRequest): HttpUrl? {
         val base = PreferenceManager.getDefaultSharedPreferences(applicationContext)
             .getString("homeAssistantUrl", "").orEmpty()
-        val url = CameraRequest.resolve(base, request.url)
-        if (url == null) {
-            Log.w("MainActivity", "Ignoring a camera snapshot outside the configured Home Assistant URL")
-            return
+        return CameraRequest.resolve(base, request.url).also {
+            if (it == null) Log.w("MainActivity", "Ignoring a camera snapshot outside the configured Home Assistant URL")
         }
+    }
+
+    private fun startCameraTakeover(request: CameraRequest, url: HttpUrl) {
+        if (!::cameraOverlay.isInitialized) return
         if (isFrameInactive == true && !overlayWoke) {
             if (!request.wake) {
                 Log.i("MainActivity", "Dropping a camera snapshot while the display is off")
@@ -1865,6 +1924,8 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val PREFETCH_AFTER_TRANSITION_MILLIS = 250L
         const val NOTIFICATION_FADE_MILLIS = 300L
+        const val KEY_DISPLAY_HOLD_ACTIVE = "displayHoldActive"
+        const val KEY_DISPLAY_HOLD_UNTIL = "displayHoldUntil"
         const val NOTIFICATION_SCRIM_ALPHA = 200
         const val PREFETCH_THREAD_PRIORITY = Process.THREAD_PRIORITY_DEFAULT + 4 * Process.THREAD_PRIORITY_LESS_FAVORABLE
 

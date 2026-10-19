@@ -87,6 +87,14 @@ rest_command:
 
 Set the secret value to `Bearer TOKEN`, including the `Bearer` prefix.
 
+Turning the display off over RPC or MQTT overrides **Active Times** until the schedule next
+changes: turned off at 15:00 with an active window of 07:00–23:00, the frame stays off through
+23:00 and wakes at 07:00 as usual. Turning it on outside the active window holds until the next
+change or for two hours, whichever comes first: turned on at 23:30, it stays on until 01:30. A
+command that matches the schedule clears any override. Without Active Times, "off" lasts until
+the next command. The override survives a restart of the app; the next scheduled change is
+taken from the schedule at the time of the command.
+
 For automatic Home Assistant device/entity creation, enable **MQTT**, enter a broker URI such as
 `tcp://HOME-ASSISTANT-IP:1883` (or `ssl://HOST:8883` with a trusted certificate), and provide the
 broker credentials. The frame publishes retained MQTT Discovery definitions for display and
@@ -151,7 +159,8 @@ actions:
             "duration": 60, "refresh": 2, "wake": true} | to_json }}
 ```
 
-The same JSON can go to the RPC `POST /api/v1/actions/camera`. `duration` is 5–300 seconds
+The same JSON can go to the RPC `POST /api/v1/actions/camera`, which answers 400 when the URL is
+outside the Home Assistant URL (over MQTT such a command is only logged). `duration` is 5–300 seconds
 (default 30); `refresh` re-fetches the snapshot every 1–30 seconds for a near-live view (default
 0, a single snapshot); `wake` works as for notifications. A new snapshot replaces the one showing,
 notifications still appear over it, and tapping the screen or pressing the **Dismiss overlay**

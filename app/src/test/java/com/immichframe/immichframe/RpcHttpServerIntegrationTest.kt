@@ -26,7 +26,7 @@ class RpcHttpServerIntegrationTest {
                 override fun refresh() = Unit
                 override fun openSettings() = Unit
                 override fun notify(notification: FrameNotification) = Unit
-                override fun showCamera(request: CameraRequest) = Unit
+                override fun showCamera(request: CameraRequest) = true
                 override fun dismissOverlays() = Unit
             },
             hostname = "127.0.0.1",

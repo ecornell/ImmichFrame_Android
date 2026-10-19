@@ -430,7 +430,18 @@ object Helpers {
      * rules (always active) or no transition is found within the next eight days. Calendar-based
      * minute steps intentionally follow local-time daylight-saving transitions.
      */
-    fun nextActiveStart(schedule: ActiveSchedule, now: Calendar): Calendar? {
+    fun nextActiveStart(schedule: ActiveSchedule, now: Calendar): Calendar? =
+        nextTransition(schedule, now) { wasActive, active -> !wasActive && active }
+
+    /** Returns the next transition in either direction after [now]; null as for [nextActiveStart]. */
+    fun nextScheduleChange(schedule: ActiveSchedule, now: Calendar): Calendar? =
+        nextTransition(schedule, now) { wasActive, active -> wasActive != active }
+
+    private fun nextTransition(
+        schedule: ActiveSchedule,
+        now: Calendar,
+        matches: (wasActive: Boolean, active: Boolean) -> Boolean,
+    ): Calendar? {
         if (schedule.rules.isEmpty()) return null
         val cursor = now.clone() as Calendar
         // Round the instant, not wall-clock fields: Calendar.set() can resolve an ambiguous
@@ -442,7 +453,7 @@ object Helpers {
         val deadline = now.timeInMillis + 8L * 24 * 60 * 60 * 1_000
         while (cursor.timeInMillis <= deadline) {
             val active = isActiveNow(schedule, cursor)
-            if (!wasActive && active) return cursor
+            if (matches(wasActive, active)) return cursor
             wasActive = active
             cursor.add(Calendar.MINUTE, 1)
         }

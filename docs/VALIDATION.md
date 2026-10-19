@@ -47,6 +47,11 @@ runbook for those steps.
   (fade, queueing on screen, dropping while the display is off, and a `wake` notification turning
   the screen on and off again without starting the slideshow or a manual override) needs a device
   check.
+- `DisplayHoldTest`: a remote display command that differs from Active Times holds until the
+  next scheduled change (or the next command without one), an "on" for at most two hours, and
+  one that matches clears it.
+  `HelpersTest` covers `nextScheduleChange` in both directions. Holding against the 30-second
+  check, `onResume`, a manual wake, and an app restart needs a device check.
 - `CameraRequestTest`: camera command parsing, timing bounds, and the origin check that resolves
   relative snapshot URLs against the Home Assistant URL and rejects every other origin.
   `RemoteControlTest` covers the camera and dismiss routes and the dismiss button, and the MQTT
