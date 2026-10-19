@@ -86,8 +86,10 @@ target and a modern Android target. Do not run unqualified builds against produc
    library several times and confirm none stall or are cut off by the watchdog (duration + 15 s).
    Videos are streamed through ImmichFrame at their Immich playback bitrate, often the original
    (~15 Mbit/s for 1080p) with no on-device cache. Record the frame's link rate/RSSI. If playback
-   stalls, set Immich's transcode policy to all videos at a lower target resolution (e.g. 720p)
-   and re-run the transcode job, accepting that it applies to every Immich client.
+   stalls, lower Immich's playback bitrate rather than changing the app. Production now
+   re-encodes anything above 720p with a 4500k cap; the settings, the Immich v3 metadata refresh
+   a video needs before it will encode, and the gap for small high-bitrate videos are documented
+   in `DEPLOYMENT.md` of the ImmichFrame repository. The W10J measured about 25 Mbit/s.
 7. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
