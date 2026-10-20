@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
+import android.util.TypedValue
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
@@ -96,9 +97,24 @@ internal class CameraOverlay(
     }
 
     private fun reveal(title: String?) {
+        if (!title.isNullOrEmpty()) styleCaption()
         caption.text = title.orEmpty()
         caption.visibility = if (title.isNullOrEmpty()) View.GONE else View.VISIBLE
         container.visibility = View.VISIBLE
+    }
+
+    // Sized to the screen like notifications; the layout's fixed size is tiny on a large frame.
+    private fun styleCaption() {
+        val metrics = caption.resources.displayMetrics
+        val root = caption.rootView
+        val width = root.width.takeIf { it > 0 } ?: metrics.widthPixels
+        val height = root.height.takeIf { it > 0 } ?: metrics.heightPixels
+        val textSize = OverlayText.sizePx(width, height)
+        caption.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize)
+        val horizontal = (textSize * 0.8f).toInt()
+        val vertical = (textSize / 2).toInt()
+        caption.setPadding(horizontal, vertical, horizontal, vertical)
+        caption.maxWidth = width * 8 / 10
     }
 
     private fun hide() {

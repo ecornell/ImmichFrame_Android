@@ -1853,7 +1853,7 @@ class MainActivity : AppCompatActivity() {
     private fun styleNotification() {
         val width = window.decorView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val height = window.decorView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val textSize = FrameNotification.textSizePx(width, height)
+        val textSize = OverlayText.sizePx(width, height)
         txtNotification.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize)
         txtNotification.background = GradientDrawable().apply {
             setColor(Color.argb(NOTIFICATION_SCRIM_ALPHA, 0, 0, 0))
