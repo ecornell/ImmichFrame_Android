@@ -40,3 +40,8 @@ the update, as the notify and camera messages show.
 Added `rest_command.w10j_notify` to `configuration.yaml` and `script.message_the_frames` to
 `scripts.yaml` (message, title, duration 3–300 s, wake; queued; W10J over RPC with
 `continue_on_error`, then WF1561 over MQTT). Backups carry the suffix `.bak-2026-10-19-notify`.
+
+A "Photo frames" section on the Main dashboard (first view) holds a "Send a message" tile for the
+script; tapping it opens the script's fields. It was added to `.storage/lovelace.lovelace_main`
+with one restart (backup `/config/lovelace.lovelace_main.bak-2026-10-19-frames`) and confirmed
+working by the owner.
