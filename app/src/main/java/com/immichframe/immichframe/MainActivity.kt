@@ -25,6 +25,7 @@ import android.text.Spanned
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.TextureView
@@ -1831,7 +1832,10 @@ class MainActivity : AppCompatActivity() {
         styleNotification()
         txtNotification.text = SpannableStringBuilder().apply {
             next.title?.let { title ->
-                append(title, StyleSpan(Typeface.BOLD), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                val start = length
+                append(title)
+                setSpan(StyleSpan(Typeface.BOLD), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(RelativeSizeSpan(NOTIFICATION_TITLE_SCALE), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 append("\n")
             }
             append(next.message)
@@ -1847,16 +1851,18 @@ class MainActivity : AppCompatActivity() {
     // Styled here rather than in applyOverlayStyle, which WebView mode never runs. A fixed dark scrim
     // keeps the text readable over any photo or web page, whatever the overlay settings.
     private fun styleNotification() {
-        val density = resources.displayMetrics.density
+        val width = window.decorView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val height = window.decorView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val textSize = FrameNotification.textSizePx(width, height)
+        txtNotification.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize)
         txtNotification.background = GradientDrawable().apply {
             setColor(Color.argb(NOTIFICATION_SCRIM_ALPHA, 0, 0, 0))
-            cornerRadius = 12 * density
+            cornerRadius = textSize / 2
         }
-        val horizontal = (20 * density).toInt()
-        val vertical = (12 * density).toInt()
+        val horizontal = (textSize * 0.8f).toInt()
+        val vertical = (textSize / 2).toInt()
         txtNotification.setPadding(horizontal, vertical, horizontal, vertical)
-        txtNotification.maxWidth = (window.decorView.width.takeIf { it > 0 }
-            ?: resources.displayMetrics.widthPixels) * 7 / 10
+        txtNotification.maxWidth = width * 8 / 10
     }
 
     private fun hideNotification() {
@@ -1956,6 +1962,7 @@ class MainActivity : AppCompatActivity() {
         const val KEY_DISPLAY_HOLD_ACTIVE = "displayHoldActive"
         const val KEY_DISPLAY_HOLD_UNTIL = "displayHoldUntil"
         const val NOTIFICATION_SCRIM_ALPHA = 200
+        const val NOTIFICATION_TITLE_SCALE = 1.2f
         const val PREFETCH_THREAD_PRIORITY = Process.THREAD_PRIORITY_DEFAULT + 4 * Process.THREAD_PRIORITY_LESS_FAVORABLE
 
         /** A single thread builds slides, so a prefetch never runs two decodes at once. */

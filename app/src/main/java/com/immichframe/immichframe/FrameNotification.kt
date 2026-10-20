@@ -19,6 +19,12 @@ data class FrameNotification(
         const val MAX_SECONDS = 300
         private const val MAX_MESSAGE = 500
         private const val MAX_TITLE = 100
+        // The text is this fraction of the screen's shorter side, so it reads from across a room on
+        // any frame: 50 px on the W10J (800 high), 68 px on the WF1561 (1080 high).
+        private const val TEXT_SHARE = 16f
+
+        /** The message's text size in pixels for a [width] by [height] screen. */
+        fun textSizePx(width: Int, height: Int): Float = minOf(width, height) / TEXT_SHARE
 
         /**
          * Home Assistant's MQTT notify entity publishes only the message text, so a plain payload

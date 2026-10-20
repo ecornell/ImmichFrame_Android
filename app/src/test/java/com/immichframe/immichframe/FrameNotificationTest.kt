@@ -56,4 +56,10 @@ class FrameNotificationTest {
         assertEquals("3", queue.poll()?.message)
         assertNull(queue.poll())
     }
+
+    @Test fun textScalesWithTheShorterSide() {
+        assertEquals(50f, FrameNotification.textSizePx(1280, 800), 0.01f)
+        assertEquals(67.5f, FrameNotification.textSizePx(1920, 1080), 0.01f)
+        assertEquals(67.5f, FrameNotification.textSizePx(1080, 1920), 0.01f)
+    }
 }
