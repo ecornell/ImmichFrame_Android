@@ -36,6 +36,13 @@ runbook for those steps.
   `AsyncRefreshTimerTest` verifies the shared 30-second server-settings cadence, single in-flight
   refresh, lifecycle cancellation, and rejection of stale completions. Activity and DreamService
   share these timer implementations so running flags cannot drift from callback removal.
+- `FramePreferencesTest`: native presentation preference defaults, range clamping, dp-to-pixel
+  conversion, and the fallback for unknown background/scale names.
+- `OverlayFormatTest`: photo captions (date, location, split slides), the date/time text and
+  where its enlarged time starts, malformed server formats, the weather line in the device
+  locale, and the scrim colour behind light and dark text.
+- `ImageRetryBackoffTest`: a failed image is retried after 5 s, doubling to 5 minutes, and a
+  presented image starts over.
 - `NextSlideQueueTest`: a prefetched slide is presented immediately, an advance during a build
   waits for it, only one build runs at a time, stale slides are discarded, a failed prefetch is
   silent while a failed requested build is reported, and pausing keeps but never presents a slide.
@@ -107,6 +114,10 @@ target and a modern Android target. Do not run unqualified builds against produc
 1. Seed a successful image/settings cache, stop the process, and disable the backend. Start native
    activity and screensaver separately: both should show a full-sized last-known image. Repeat
    with one cached portrait and split-view settings; it must not wait for a second portrait.
+   The screensaver now runs the activity's pipeline (`NativeSlideshowController`), so check it
+   like the activity: the clock changes on the minute, weather appears without waiting for a
+   slide, the offline indicator behaves the same, failed loads back off to 5 minutes, and its
+   PSS (`dumpsys meminfo` of the dream) is no higher than the activity's on the WF1561.
 2. Restore the backend: fresh images should replace the cache, weather should resume, and the
    offline indicator should clear only after a valid live image is presented.
 3. On an emulator with a working WebView, switch native → WebView → native repeatedly. Both image
@@ -158,6 +169,10 @@ target and a modern Android target. Do not run unqualified builds against produc
 10. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
-TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this
-change. Shared session/timer/pairing policy is extracted; Android UI, bitmap ownership, and the two
-presentation surfaces remain separate.
+TLS/secret-storage changes are deliberately outside this change. The activity and the
+screensaver share their presentation: `FramePreferences` (preferences), `OverlayController`
+(clock, captions, weather, offline indicator), `WebFrameController` (WebView mode) and
+`NativeSlideshowController` (server settings, slide building on one decode thread, presentation,
+video, offline cache, retry backoff). Each host keeps its own lifecycle; only the activity adds
+remote control, photo reporting, videos, notifications, camera snapshots and the display
+schedule.
