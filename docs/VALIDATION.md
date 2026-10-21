@@ -141,7 +141,12 @@ target and a modern Android target. Do not run unqualified builds against produc
    Active Times, and with the power button), and wake it with a `"wake": true` notification. The
    panel must come back at 30%, Home Assistant must keep showing 30%, and a brightness change sent
    while the display is off must not light the panel until it wakes.
-9. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+9. Configuration changes: with RPC and MQTT on, attach and detach a keyboard or remote, rotate
+   (or resize a multi-window emulator), and change the locale. The frame must not restart (the
+   MQTT availability stays online, `App started` is unchanged, playback is not reset), the clock
+   uses the new locale on its next tick, a showing notification is resized, and the next slide
+   fits the new window.
+10. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
 TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this

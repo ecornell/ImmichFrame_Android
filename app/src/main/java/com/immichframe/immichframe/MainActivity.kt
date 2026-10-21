@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
@@ -1676,6 +1677,16 @@ class MainActivity : AppCompatActivity() {
                 webView?.loadUrl(url, headers)
             }
         }
+    }
+
+    /** See the manifest's configChanges: views re-lay out themselves; only sized-by-code parts need redoing. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        hideSystemUI()
+        // Sized from the window, which has its new size only after the next layout. A slide
+        // prefetched for the old size fails its spec check and is rebuilt; the slide on screen is
+        // replaced at the next interval.
+        if (notificationShowing) window.decorView.doOnNextLayout { if (notificationShowing) styleNotification() }
     }
 
     override fun onNewIntent(intent: Intent) {

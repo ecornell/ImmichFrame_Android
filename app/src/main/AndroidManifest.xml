@@ -56,8 +56,14 @@
             android:name=".ActiveScheduleActivity"
             android:exported="false"
             android:theme="@style/MyTheme.NoActionBar" />
+        <!-- Recreating the frame restarts RPC, MQTT and playback, so changes that only move or
+             re-lay out its views are handled in onConfigurationChanged: a remote or keyboard
+             attaching to a TV, rotation and window resizes, a dock's uiMode (night mode is
+             forced anyway) and locale (the clock formats with the current locale on each tick).
+             Density and font scale still recreate it, since the inflated dp/sp sizes change. -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|locale|layoutDirection"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/MyTheme.NoActionBar">
