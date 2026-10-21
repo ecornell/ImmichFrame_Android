@@ -20,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import android.text.SpannableString
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -191,6 +192,7 @@ class MainActivity : AppCompatActivity() {
     private var currentWeather = ""
     private val isImageTimerRunning get() = imageTimer.isRunning
     private val handler = Handler(Looper.getMainLooper())
+    private val webViewRetryToken = Any()
     // Kept decoded: live responses no longer carry the image as Base64.
     private var previousImage: Helpers.PreparedImage? = null
     private var currentImage: Helpers.PreparedImage? = null
@@ -983,6 +985,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (useWebView) {
             val activeWebView = ensureWebView()
+            cancelWebViewRetries()
 
             activeWebView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -1012,24 +1015,24 @@ class MainActivity : AppCompatActivity() {
                     if (request?.isForMainFrame == true && error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        postWebViewRetry(500) {
                             val errorCode = error.errorCode
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
-                        }, 500)
+                        }
                         // Only a failed page load is retried; a failed image or favicon would
                         // otherwise reload the whole page every 5 seconds.
-                        handler.postDelayed({
+                        postWebViewRetry(5000) {
                             //check url again in case the user has changed it
                             val currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
-                            if (currentUrl.isNotEmpty()) {
+                            if (currentUrl.isNotEmpty() && webView === activeWebView) {
                                 activeWebView.loadUrl(
                                     currentUrl,
                                     if (authSecret.isBlank()) emptyMap()
                                     else mapOf("Authorization" to "Bearer $authSecret"),
                                 )
                             }
-                        }, 5000)
+                        }
                     }
                 }
             }
@@ -1460,6 +1463,8 @@ class MainActivity : AppCompatActivity() {
             // Stop refreshing content and invalidate in-flight native callbacks while inactive.
             stopNativePlayback()
             if (useWebView) {
+                // A pending error-page retry would reload the page on the dark screen.
+                cancelWebViewRetries()
                 webView?.loadUrl("about:blank")
             }
             dimOverlay.apply {
@@ -1821,7 +1826,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Error-page script and reload callbacks, posted with [webViewRetryToken] so they can be removed. */
+    private fun postWebViewRetry(delayMillis: Long, action: () -> Unit) {
+        handler.postAtTime(action, webViewRetryToken, SystemClock.uptimeMillis() + delayMillis)
+    }
+
+    private fun cancelWebViewRetries() = handler.removeCallbacksAndMessages(webViewRetryToken)
+
     private fun destroyWebView() {
+        cancelWebViewRetries()
         webView?.let { view ->
             view.stopLoading()
             view.loadUrl("about:blank")

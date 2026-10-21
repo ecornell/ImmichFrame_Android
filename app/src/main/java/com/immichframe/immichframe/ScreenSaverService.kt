@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.service.dreams.DreamService
 import android.text.SpannableString
 import android.text.Spanned
@@ -86,6 +87,7 @@ class ScreenSaverService : DreamService() {
     private var nativeSessionToken = 0L
     @Volatile private var imageGeneration = 0L
     private val handler = Handler(Looper.getMainLooper())
+    private val webViewRetryToken = Any()
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
     private var lastFrameMetaLeft: FrameMeta? = null
@@ -577,6 +579,7 @@ class ScreenSaverService : DreamService() {
 
         if (useWebView) {
             val activeWebView = ensureWebView()
+            cancelWebViewRetries()
             activeWebView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
@@ -607,16 +610,18 @@ class ScreenSaverService : DreamService() {
                     if (request?.isForMainFrame == true && error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        postWebViewRetry(500) {
                             val errorCode = error.errorCode
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
-                        }, 500)
+                        }
                         // Only a failed page load is retried; a failed image or favicon would
                         // otherwise reload the whole page every 5 seconds.
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
-                        }, 5000)
+                        postWebViewRetry(5000) {
+                            if (webView === activeWebView) {
+                                activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
+                            }
+                        }
                     }
                 }
             }
@@ -837,7 +842,15 @@ class ScreenSaverService : DreamService() {
         }
     }
 
+    /** Error-page script and reload callbacks, posted with [webViewRetryToken] so they can be removed. */
+    private fun postWebViewRetry(delayMillis: Long, action: () -> Unit) {
+        handler.postAtTime(action, webViewRetryToken, SystemClock.uptimeMillis() + delayMillis)
+    }
+
+    private fun cancelWebViewRetries() = handler.removeCallbacksAndMessages(webViewRetryToken)
+
     private fun destroyWebView() {
+        cancelWebViewRetries()
         webView?.let { view ->
             view.stopLoading()
             view.loadUrl("about:blank")
