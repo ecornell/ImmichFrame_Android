@@ -9,6 +9,12 @@ bash scripts/validate.sh testDebugUnitTest lintDebug assembleDebug assembleDebug
 `assembleFrame` builds the R8-minified, non-debuggable `frame` variant that frames run (see
 `docs/DEPLOYMENT.md`). Unit tests and lint still run against the debug variant, so the frame build
 must also be exercised on a device: R8 problems such as stripped reflection only appear at runtime.
+`proguard-rules.pro` keeps only what is reached by reflection: the Gson DTOs in `Helpers`
+(`ImageResponse`, `ImageMetadata`, `ServerSettings`, `Weather`), the Retrofit `ApiService`, and
+Paho. After changing it, check `app/build/outputs/mapping/release/mapping.txt` maps those classes
+to themselves, and on a device that a frame build loads server settings, images with metadata
+(the current photo sensor), weather, and the cached settings and image after a restart with the
+server down, and that RPC and MQTT still answer.
 
 The script selects the local JDK/SDK defaults documented in the README. It also runs Python
 operational tests and Pester deployment tests when PowerShell/Pester is available. Deployment

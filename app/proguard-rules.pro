@@ -1,26 +1,20 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# R8 rules for ImmichFrame. Classes named in the manifest and layouts are kept by the rules AAPT
+# generates, and Retrofit, Gson and OkHttp ship their own consumer rules. What remains is what
+# this app reaches by reflection.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Gson reads and writes these by field name: the Retrofit responses (RandomImageAndInfo, Config,
+# Weather) and the cached server settings (CachedServerSettingsStore). Their constructors stay
+# too, so R8's full mode cannot assume they are never instantiated and fold their fields to null.
+-keep class com.immichframe.immichframe.Helpers$ImageResponse { *; }
+-keep class com.immichframe.immichframe.Helpers$ImageMetadata { *; }
+-keep class com.immichframe.immichframe.Helpers$ServerSettings { *; }
+-keep class com.immichframe.immichframe.Helpers$Weather { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
--keep class retrofit2.** { *; }
--keep class com.immichframe.immichframe.** { *; }
+# Retrofit builds a proxy from the interface's annotations and generic return types. Retrofit's
+# own rules cover this; it is kept explicitly because a stripped interface fails only at runtime.
+-keep interface com.immichframe.immichframe.Helpers$ApiService { *; }
+# Generic field and return types (List<String>, Call<ImageResponse>) and the HTTP annotations.
+-keepattributes Signature,InnerClasses,EnclosingMethod,RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations,AnnotationDefault
 
 # Paho finds its network modules through ServiceLoader and its logger by class name.
 -keep class org.eclipse.paho.client.mqttv3.** { *; }
