@@ -1158,35 +1158,49 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startPlaybackAfterSettingsLoaded() {
-        val cachedImage = currentImage ?: CachedImageStore.readPrepared(applicationContext)
-        val source = if (currentImage == null) CurrentPhoto.SOURCE_CACHE else CurrentPhoto.SOURCE_SERVER
-        if (cachedImage != null) {
-            val token = nativeSessionToken
-            // A lone cached portrait must be usable with no backend available. showImage also
-            // waits for layout, and only a successfully presented frame becomes currentImage.
-            showImage(
-                cachedImage,
-                playVideo = false,
-                afterPresented = { frame ->
-                    currentImage = cachedImage
-                    reportPhoto(listOf(cachedImage), source, frame.bitmap)
-                    remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
-                    val generation = imageGeneration
-                    // getNextImage rejects an active imageJob, so wait for the render to finish.
-                    imageJob?.invokeOnCompletion { error ->
-                        if (error == null) handler.post {
-                            if (generation == imageGeneration && playbackSession.isCurrent(token)) getNextImage()
-                        }
-                    }
-                },
-            )
+        val current = currentImage
+        if (current != null) {
+            showStartupImage(current, CurrentPhoto.SOURCE_SERVER)
         } else {
-            getNextImage()
+            // The cached image is up to 24 MB and its lock is shared with a background cache
+            // write, so read it off the main thread.
+            val token = nativeSessionToken
+            val generation = imageGeneration
+            lifecycleScope.launch {
+                val cached = withContext(Dispatchers.IO) { CachedImageStore.readPrepared(applicationContext) }
+                // A slide presented, or playback stopped or stepped, while reading wins.
+                if (!playbackSession.isCurrent(token) || currentImage != null || generation != imageGeneration) {
+                    return@launch
+                }
+                if (cached != null) showStartupImage(cached, CurrentPhoto.SOURCE_CACHE) else getNextImage()
+            }
         }
         startImageTimer()
         handler.removeCallbacks(clockRunnable)
         handler.post(clockRunnable)
         updateWeatherTimer()
+    }
+
+    private fun showStartupImage(image: Helpers.PreparedImage, source: String) {
+        val token = nativeSessionToken
+        // A lone cached portrait must be usable with no backend available. showImage also
+        // waits for layout, and only a successfully presented frame becomes currentImage.
+        showImage(
+            image,
+            playVideo = false,
+            afterPresented = { frame ->
+                currentImage = image
+                reportPhoto(listOf(image), source, frame.bitmap)
+                remoteState.update { it.copy(offlineFallback = !it.serverConnected) }
+                val generation = imageGeneration
+                // getNextImage rejects an active imageJob, so wait for the render to finish.
+                imageJob?.invokeOnCompletion { error ->
+                    if (error == null) handler.post {
+                        if (generation == imageGeneration && playbackSession.isCurrent(token)) getNextImage()
+                    }
+                }
+            },
+        )
     }
 
     private fun updateWeatherTimer() {
