@@ -223,7 +223,7 @@ internal class MqttControlClient(
     private val state: RemoteStateStore,
     private val commands: RemoteCommands,
 ) {
-    private var client: MqttAsyncClient? = null
+    @Volatile private var client: MqttAsyncClient? = null
     @Volatile private var running = false
     // Paho's automatic reconnect only applies after a first successful connection; a frame that
     // boots before Wi-Fi or the broker is up retries its first connection here instead.
@@ -281,7 +281,17 @@ internal class MqttControlClient(
             retryExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
                 Thread(runnable, "ImmichFrame-mqtt-retry").apply { isDaemon = true }
             }
-            connect(mqtt, options)
+            // Connecting can block; it waits on the lifecycle thread behind any earlier client's
+            // shutdown. Failures from here on are retried rather than reported.
+            lifecycle.execute {
+                if (!running || client !== mqtt) return@execute
+                try {
+                    connect(mqtt, options)
+                } catch (e: Exception) {
+                    Log.w(TAG, "MQTT connect failed: ${e.message}")
+                    scheduleRetry(mqtt, options)
+                }
+            }
             return true
         } catch (e: Exception) {
             running = false
@@ -327,6 +337,10 @@ internal class MqttControlClient(
         }
     }
 
+    /**
+     * Returns at once; the offline publish and disconnect, which can take about three seconds
+     * against a slow broker, run on the lifecycle thread.
+     */
     fun stop() {
         running = false
         retryExecutor?.shutdownNow()
@@ -334,16 +348,18 @@ internal class MqttControlClient(
         state.removeListener(stateListener)
         val mqtt = client ?: return
         client = null
-        if (mqtt.isConnected) {
-            runCatching {
-                mqtt.publish(
-                    "${settings.baseTopic}/availability",
-                    MqttMessage("offline".toByteArray()).apply { qos = 1; isRetained = true },
-                ).waitForCompletion(1_000)
+        lifecycle.execute {
+            if (mqtt.isConnected) {
+                runCatching {
+                    mqtt.publish(
+                        "${settings.baseTopic}/availability",
+                        MqttMessage("offline".toByteArray()).apply { qos = 1; isRetained = true },
+                    ).waitForCompletion(1_000)
+                }
             }
+            runCatching { mqtt.disconnectForcibly(1_000, 1_000, false) }
+            runCatching { mqtt.close() }
         }
-        runCatching { mqtt.disconnectForcibly(1_000, 1_000, false) }
-        runCatching { mqtt.close() }
     }
 
     private fun subscribeAndPublish() {
@@ -425,6 +441,16 @@ internal class MqttControlClient(
 
     companion object {
         private const val TAG = "MqttControlClient"
+
+        /**
+         * Connects and disconnects every client in order, off the main thread. Shared because a
+         * restarted client uses the same client id: connecting it before the old one has sent
+         * "offline" and disconnected would let the broker evict the old session, whose will
+         * message could then mark the new one offline.
+         */
+        private val lifecycle = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ImmichFrame-mqtt-lifecycle").apply { isDaemon = true }
+        }
         private const val INITIAL_RETRY_MILLIS = 5_000L
         private const val MAX_RETRY_MILLIS = 120_000L
     }
