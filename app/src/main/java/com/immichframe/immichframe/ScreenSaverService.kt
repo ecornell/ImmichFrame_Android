@@ -4,15 +4,10 @@ import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.service.dreams.DreamService
-import android.text.SpannableString
-import android.text.Spanned
-import android.text.style.RelativeSizeSpan
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
@@ -23,8 +18,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ImageView
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.preference.PreferenceManager
 import androidx.core.view.doOnNextLayout
@@ -40,10 +33,6 @@ import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
-import androidx.core.graphics.toColorInt
 
 class ScreenSaverService : DreamService() {
     private var webViewRetryScope: CoroutineScope? = null
@@ -51,18 +40,12 @@ class ScreenSaverService : DreamService() {
     private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
-    private lateinit var photoInfoContainer: LinearLayout
-    private lateinit var txtPhotoInfoLeft: TextView
-    private lateinit var txtPhotoInfoRight: TextView
-    private lateinit var txtDateTime: TextView
-    private lateinit var txtOfflineIndicator: TextView
+    private lateinit var overlay: OverlayController
     private lateinit var serverSettings: Helpers.ServerSettings
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
     private var useWebView = true
-    private val burnInController = OverlayBurnInController()
     private var framePrefs = FramePreferences()
-    private var currentWeather = ""
     private var imageCall: Call<Helpers.ImageResponse>? = null
     private var weatherCall: Call<Helpers.Weather>? = null
     private var settingsCall: Call<Helpers.ServerSettings>? = null
@@ -76,8 +59,6 @@ class ScreenSaverService : DreamService() {
     private val webViewRetryToken = Any()
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
-    private var lastFrameMetaLeft: FrameMeta? = null
-    private var lastFrameMetaRight: FrameMeta? = null
     private var portraitCache: Helpers.PreparedImage? = null
     private var portraitCacheGeneration = -1L
     private val portraitCacheLock = Any()
@@ -105,11 +86,14 @@ class ScreenSaverService : DreamService() {
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
         framePresenter = NativeFramePresenter(imageView1, imageView2)
-        photoInfoContainer = findViewById(R.id.photoInfoContainer)
-        txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
-        txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
-        txtDateTime = findViewById(R.id.txtDateTime)
-        txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
+        overlay = OverlayController(
+            findViewById(R.id.txtDateTime),
+            findViewById(R.id.photoInfoContainer),
+            findViewById(R.id.txtPhotoInfoLeft),
+            findViewById(R.id.txtPhotoInfoRight),
+            findViewById(R.id.txtOfflineIndicator),
+            shouldTick = { !useWebView },
+        )
 
         loadSettings()
     }
@@ -117,6 +101,7 @@ class ScreenSaverService : DreamService() {
     override fun onDreamingStopped() {
         super.onDreamingStopped()
         if (::framePresenter.isInitialized) framePresenter.clear()
+        if (::overlay.isInitialized) overlay.stopClock()
         stopNativePlayback()
         webViewRetryScope?.cancel()
         webViewRetryScope = null
@@ -268,75 +253,8 @@ class ScreenSaverService : DreamService() {
             zoomFramesPerSecond = framePrefs.zoomFrameRate,
             transitionFramesPerSecond = framePrefs.transitionFrameRate,
         ) {
-            lastFrameMetaLeft = it.left
-            lastFrameMetaRight = it.right
-            updatePhotoInfo(it.left, it.right)
-            val distance = if (framePrefs.burnInEnabled) 12f else 0f
-            val (x, y) = burnInController.offset(System.currentTimeMillis() / 300_000L, distance)
-            txtDateTime.translationX = x
-            txtDateTime.translationY = y
-            photoInfoContainer.translationX = -x
-            photoInfoContainer.translationY = -y
-            updateDateTimeWeather()
-        }
-    }
-
-    private fun updatePhotoInfo(left: FrameMeta, right: FrameMeta?) {
-        fun text(meta: FrameMeta) = buildString {
-            if (serverSettings.showPhotoDate && meta.date.isNotEmpty()) append(meta.date)
-            if (serverSettings.showImageLocation && meta.location.isNotEmpty()) {
-                if (isNotEmpty()) append("\n")
-                append(meta.location)
-            }
-        }
-        val leftText = if (right == null) "" else text(left)
-        val rightText = text(right ?: left)
-        txtPhotoInfoLeft.text = leftText
-        txtPhotoInfoRight.text = rightText
-        txtPhotoInfoLeft.visibility = if (leftText.isBlank()) View.GONE else View.VISIBLE
-        txtPhotoInfoRight.visibility = if (rightText.isBlank()) View.GONE else View.VISIBLE
-        photoInfoContainer.animate().cancel()
-        photoInfoContainer.alpha = 1f
-        if (framePrefs.overlayFadeSeconds > 0) {
-            photoInfoContainer.animate().alpha(0f).setStartDelay(framePrefs.overlayFadeSeconds * 1000L).start()
-        }
-    }
-
-    private fun updateDateTimeWeather() {
-        if (serverSettings.showClock) {
-            val currentDateTime = Calendar.getInstance().time
-
-            val formattedDate = try {
-                SimpleDateFormat(serverSettings.photoDateFormat, Locale.getDefault()).format(
-                    currentDateTime
-                )
-            } catch (_: Exception) {
-                ""
-            }
-
-            val formattedTime = try {
-                SimpleDateFormat(serverSettings.clockFormat, Locale.getDefault()).format(
-                    currentDateTime
-                )
-            } catch (_: Exception) {
-                ""
-            }
-
-            val dt = if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) {
-                "$formattedDate\n$formattedTime"
-            } else {
-                formattedTime
-            }
-
-            txtDateTime.text = SpannableString(dt).apply {
-                val start =
-                    if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) formattedDate.length + 1 else 0
-                setSpan(RelativeSizeSpan(2f), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-        }
-
-        if (serverSettings.showWeatherDescription) {
-            txtDateTime.append(currentWeather)
+            overlay.showPhotoInfo(it.left, it.right)
+            overlay.updateDateTimeWeather()
         }
     }
 
@@ -396,20 +314,7 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun setOfflineIndicator(offline: Boolean) {
-        if (!::txtOfflineIndicator.isInitialized) return
-        txtOfflineIndicator.animate().cancel()
-        if (!offline) {
-            txtOfflineIndicator.visibility = View.GONE
-            return
-        }
-        txtOfflineIndicator.alpha = 1f
-        txtOfflineIndicator.visibility = View.VISIBLE
-        txtOfflineIndicator.animate()
-            .alpha(0f)
-            .setStartDelay(8_000L)
-            .setDuration(500L)
-            .withEndAction { txtOfflineIndicator.visibility = View.GONE }
-            .start()
+        if (::overlay.isInitialized) overlay.setOffline(offline)
     }
 
     private fun stopImageTimer() {
@@ -442,10 +347,7 @@ class ScreenSaverService : DreamService() {
                 weatherCall = null
                 if (response.isSuccessful) {
                     val weatherResponse = response.body()
-                    if (weatherResponse != null) {
-                        currentWeather =
-                            "\n ${weatherResponse.location}, ${weatherResponse.temperatureUnit} \n ${weatherResponse.description}"
-                    }
+                    if (weatherResponse != null) overlay.setWeather(weatherResponse)
                 }
             }
 
@@ -534,6 +436,7 @@ class ScreenSaverService : DreamService() {
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         framePrefs = FramePreferences.load(prefs, resources.displayMetrics.density)
+        overlay.setPreferences(framePrefs)
         stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
@@ -542,8 +445,7 @@ class ScreenSaverService : DreamService() {
         webViewContainer.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
         imageView2.visibility = if (useWebView) View.GONE else View.VISIBLE
-        photoInfoContainer.visibility = View.GONE
-        txtDateTime.visibility = View.GONE // enabled after server settings are applied
+        overlay.hide() // shown after server settings are applied
 
         if (useWebView) {
             val activeWebView = ensureWebView()
@@ -671,8 +573,8 @@ class ScreenSaverService : DreamService() {
                 portraitCacheGeneration = -1L
             }
         }
-        lastFrameMetaLeft?.let { updatePhotoInfo(it, lastFrameMetaRight) }
-        updateDateTimeWeather()
+        overlay.refreshPhotoInfo()
+        overlay.updateDateTimeWeather()
         updateWeatherTimer()
         return true
     }
@@ -685,34 +587,7 @@ class ScreenSaverService : DreamService() {
         }
         imageView1.scaleType = scaleType
         imageView2.scaleType = scaleType
-
-        if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
-            photoInfoContainer.visibility = View.VISIBLE
-            val size = framePrefs.metadataSizeSp.toFloat()
-            txtPhotoInfoLeft.textSize = size
-            txtPhotoInfoRight.textSize = size
-            val color = serverSettings.primaryColor?.let {
-                runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
-            } ?: Color.WHITE
-            txtPhotoInfoLeft.setTextColor(color)
-            txtPhotoInfoRight.setTextColor(color)
-            applyOverlayStyle()
-        } else {
-            photoInfoContainer.visibility = View.GONE
-        }
-        if (serverSettings.showClock) {
-            txtDateTime.visibility = View.VISIBLE
-            txtDateTime.textSize = framePrefs.clockSizeSp / 2f
-            txtDateTime.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            txtDateTime.setTextColor(
-                serverSettings.primaryColor?.let {
-                    runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
-                } ?: Color.WHITE,
-            )
-            applyOverlayStyle()
-        } else {
-            txtDateTime.visibility = View.GONE
-        }
+        overlay.applyPresentation(serverSettings)
     }
 
     private fun startPlaybackAfterSettingsLoaded() {
@@ -729,6 +604,7 @@ class ScreenSaverService : DreamService() {
             }
         }
         startImageTimer()
+        overlay.startClock()
         updateWeatherTimer()
     }
 
@@ -827,36 +703,5 @@ class ScreenSaverService : DreamService() {
             view.destroy()
         }
         webView = null
-    }
-
-    private fun applyOverlayStyle() {
-        val density = resources.displayMetrics.density
-        val horizontal = (12 * density).toInt()
-        val vertical = (6 * density).toInt()
-        val radius = 10 * density
-        fun style(view: TextView, alpha: Int = framePrefs.overlayScrimAlpha) {
-            val color = view.currentTextColor
-            val luminance = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
-            val scrim = if (luminance >= 128) Color.BLACK else Color.WHITE
-            view.background = GradientDrawable().apply {
-                setColor(Color.argb(alpha.coerceIn(0, 255), Color.red(scrim), Color.green(scrim), Color.blue(scrim)))
-                cornerRadius = radius
-            }
-            view.setPadding(horizontal, vertical, horizontal, vertical)
-        }
-        style(txtDateTime)
-        style(txtOfflineIndicator)
-        val metadataAlpha = (framePrefs.overlayScrimAlpha * 0.8f).toInt()
-        style(txtPhotoInfoLeft, metadataAlpha)
-        style(txtPhotoInfoRight, metadataAlpha)
-        val margin = (framePrefs.safeMarginDp * density).toInt()
-        (txtDateTime.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.setMargins(margin, margin, margin, margin)
-            txtDateTime.layoutParams = it
-        }
-        (photoInfoContainer.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.setMargins(margin, margin, margin, margin)
-            photoInfoContainer.layoutParams = it
-        }
     }
 }

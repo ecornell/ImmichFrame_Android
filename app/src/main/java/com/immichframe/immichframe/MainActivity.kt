@@ -21,7 +21,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
-import android.text.SpannableString
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -42,7 +41,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,13 +56,10 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.awaitResponse
 import java.io.IOException
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Locale
 import java.util.concurrent.Executors
 import kotlinx.coroutines.*
 import androidx.lifecycle.lifecycleScope
-import androidx.core.graphics.toColorInt
 import androidx.core.view.isVisible
 import androidx.core.view.doOnNextLayout
 
@@ -75,11 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var imageView2: ImageView
     private lateinit var videoView: TextureView
     private lateinit var videoPlayer: NativeVideoPlayer
-    private lateinit var photoInfoContainer: LinearLayout
-    private lateinit var txtPhotoInfoLeft: TextView
-    private lateinit var txtPhotoInfoRight: TextView
-    private lateinit var txtDateTime: TextView
-    private lateinit var txtOfflineIndicator: TextView
+    private lateinit var overlay: OverlayController
     private lateinit var txtNotification: TextView
     private val notifications = NotificationQueue()
     private var notificationShowing = false
@@ -173,9 +164,7 @@ class MainActivity : AppCompatActivity() {
     private var useWebView = true
     private var nativeVideos = true
     private var nativeAuthSecret = ""
-    private val burnInController = OverlayBurnInController()
     private var framePrefs = FramePreferences()
-    private var currentWeather = ""
     private val isImageTimerRunning get() = imageTimer.isRunning
     private val handler = Handler(Looper.getMainLooper())
     private val webViewRetryToken = Any()
@@ -186,8 +175,6 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var reportCurrentPhoto = false
     private var reportPhotoPeople = true
     private var photoImageMode = PhotoImageMode.OFF
-    private var lastFrameMetaLeft: FrameMeta? = null
-    private var lastFrameMetaRight: FrameMeta? = null
     private val nextSlides = NextSlideQueue<BuiltSlide> { it.frame.bitmap.recycle() }
     private var slideJob: Job? = null
     private var slideBuildGeneration = 0L
@@ -213,22 +200,6 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             checkActiveTime()
             handler.postDelayed(this, 30000)
-        }
-    }
-    private val clockRunnable = object : Runnable {
-        override fun run() {
-            if (::serverSettings.isInitialized && !useWebView && isFrameInactive != true) {
-                updateDateTimeWeather()
-                // Move static overlays slightly to reduce panel burn-in.
-                val step = ((System.currentTimeMillis() / 60_000L) % 5).toFloat() - 2f
-                val distance = if (framePrefs.burnInEnabled) 12f else 0f
-                val (x, y) = burnInController.offset(System.currentTimeMillis() / 300_000L, distance)
-                txtDateTime.translationX = x
-                txtDateTime.translationY = y
-                photoInfoContainer.translationX = -x
-                photoInfoContainer.translationY = -y
-            }
-            handler.postDelayed(this, 60_000L - (System.currentTimeMillis() % 60_000L))
         }
     }
     private var isFrameInactive: Boolean? = null
@@ -275,11 +246,14 @@ class MainActivity : AppCompatActivity() {
         framePresenter = NativeFramePresenter(imageView1, imageView2)
         videoView = findViewById(R.id.videoView)
         videoPlayer = NativeVideoPlayer(applicationContext, videoView)
-        photoInfoContainer = findViewById(R.id.photoInfoContainer)
-        txtPhotoInfoLeft = findViewById(R.id.txtPhotoInfoLeft)
-        txtPhotoInfoRight = findViewById(R.id.txtPhotoInfoRight)
-        txtDateTime = findViewById(R.id.txtDateTime)
-        txtOfflineIndicator = findViewById(R.id.txtOfflineIndicator)
+        overlay = OverlayController(
+            findViewById(R.id.txtDateTime),
+            findViewById(R.id.photoInfoContainer),
+            findViewById(R.id.txtPhotoInfoLeft),
+            findViewById(R.id.txtPhotoInfoRight),
+            findViewById(R.id.txtOfflineIndicator),
+            shouldTick = { !useWebView && isFrameInactive != true },
+        )
         txtNotification = findViewById(R.id.txtNotification)
         val cameraContainer = findViewById<View>(R.id.cameraOverlay)
         cameraOverlay = CameraOverlay(
@@ -442,10 +416,8 @@ class MainActivity : AppCompatActivity() {
             zoomFramesPerSecond = framePrefs.zoomFrameRate,
             transitionFramesPerSecond = framePrefs.transitionFrameRate,
         ) {
-            lastFrameMetaLeft = it.left
-            lastFrameMetaRight = it.right
-            updatePhotoInfo(it.left, it.right)
-            updateDateTimeWeather()
+            overlay.showPhotoInfo(it.left, it.right)
+            overlay.updateDateTimeWeather()
         }
     }
 
@@ -483,65 +455,6 @@ class MainActivity : AppCompatActivity() {
                 }
             },
         )
-    }
-
-    private fun updatePhotoInfo(left: FrameMeta, right: FrameMeta?) {
-        fun text(meta: FrameMeta) = buildString {
-            if (serverSettings.showPhotoDate && meta.date.isNotEmpty()) append(meta.date)
-            if (serverSettings.showImageLocation && meta.location.isNotEmpty()) {
-                if (isNotEmpty()) append("\n")
-                append(meta.location)
-            }
-        }
-        val leftText = if (right == null) "" else text(left)
-        val rightText = text(right ?: left)
-        txtPhotoInfoLeft.text = leftText
-        txtPhotoInfoRight.text = rightText
-        txtPhotoInfoLeft.visibility = if (leftText.isBlank()) View.GONE else View.VISIBLE
-        txtPhotoInfoRight.visibility = if (rightText.isBlank()) View.GONE else View.VISIBLE
-        photoInfoContainer.animate().cancel()
-        photoInfoContainer.alpha = 1f
-        if (framePrefs.overlayFadeSeconds > 0) {
-            photoInfoContainer.animate().alpha(0f).setStartDelay(framePrefs.overlayFadeSeconds * 1000L).start()
-        }
-    }
-
-    private fun updateDateTimeWeather() {
-        if (serverSettings.showClock) {
-            val currentDateTime = Calendar.getInstance().time
-
-            val formattedDate = try {
-                SimpleDateFormat(serverSettings.photoDateFormat, Locale.getDefault()).format(
-                    currentDateTime
-                )
-            } catch (_: Exception) {
-                ""
-            }
-
-            val formattedTime = try {
-                SimpleDateFormat(serverSettings.clockFormat, Locale.getDefault()).format(
-                    currentDateTime
-                )
-            } catch (_: Exception) {
-                ""
-            }
-
-            val dt = if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) {
-                "$formattedDate\n$formattedTime"
-            } else {
-                formattedTime
-            }
-
-            txtDateTime.text = SpannableString(dt).apply {
-                val start =
-                    if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) formattedDate.length + 1 else 0
-                setSpan(RelativeSizeSpan(2f), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-        }
-
-        if (serverSettings.showWeatherDescription) {
-            txtDateTime.append(currentWeather)
-        }
     }
 
     /** Advances live playback: presents the prefetched slide, or builds one now. */
@@ -745,20 +658,7 @@ class MainActivity : AppCompatActivity() {
                 lastImageSuccessMillis = if (imageSucceeded) System.currentTimeMillis() else it.lastImageSuccessMillis,
             )
         }
-        if (!::txtOfflineIndicator.isInitialized) return
-        txtOfflineIndicator.animate().cancel()
-        if (!offline) {
-            txtOfflineIndicator.visibility = View.GONE
-            return
-        }
-        txtOfflineIndicator.alpha = 1f
-        txtOfflineIndicator.visibility = View.VISIBLE
-        txtOfflineIndicator.animate()
-            .alpha(0f)
-            .setStartDelay(8_000L)
-            .setDuration(500L)
-            .withEndAction { txtOfflineIndicator.visibility = View.GONE }
-            .start()
+        if (::overlay.isInitialized) overlay.setOffline(offline)
     }
 
     private fun startImageTimer() {
@@ -804,11 +704,7 @@ class MainActivity : AppCompatActivity() {
                 weatherCall = null
                 if (isFrameInactive != true && response.isSuccessful) {
                     val weatherResponse = response.body()
-                    if (weatherResponse != null) {
-                        currentWeather =
-                            "\n ${weatherResponse.location}, ${"%.1f".format(weatherResponse.temperature)}${weatherResponse.unit} \n ${weatherResponse.description}"
-                        updateDateTimeWeather()
-                    }
+                    if (weatherResponse != null) overlay.setWeather(weatherResponse)
                 }
             }
 
@@ -897,6 +793,7 @@ class MainActivity : AppCompatActivity() {
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         framePrefs = FramePreferences.load(prefs, resources.displayMetrics.density)
+        overlay.setPreferences(framePrefs)
         stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
@@ -921,8 +818,7 @@ class MainActivity : AppCompatActivity() {
         btnPause.visibility = if (useWebView) View.GONE else View.VISIBLE
         btnNext.visibility = if (useWebView) View.GONE else View.VISIBLE
         swipeRefreshLayout.isEnabled = !settingsLock
-        photoInfoContainer.visibility = View.GONE // enabled after server settings are applied
-        txtDateTime.visibility = View.GONE // enabled after server settings are applied
+        overlay.hide() // shown after server settings are applied
 
         if (activeTimes) {
             handler.removeCallbacks(activeCheckRunnable)
@@ -1084,8 +980,8 @@ class MainActivity : AppCompatActivity() {
         // A playing video owns the timer until it ends or its watchdog fires.
         if (previous.interval != settings.interval && !videoPlayer.isActive) imageTimer.reschedule()
         // A prefetched slide rendered for the old layout or colours fails its spec check and is rebuilt.
-        lastFrameMetaLeft?.let { updatePhotoInfo(it, lastFrameMetaRight) }
-        updateDateTimeWeather()
+        overlay.refreshPhotoInfo()
+        overlay.updateDateTimeWeather()
         updateWeatherTimer()
         return true
     }
@@ -1098,34 +994,7 @@ class MainActivity : AppCompatActivity() {
         }
         imageView1.scaleType = scaleType
         imageView2.scaleType = scaleType
-
-        if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
-            photoInfoContainer.visibility = View.VISIBLE
-            val infoSize = framePrefs.metadataSizeSp.toFloat()
-            txtPhotoInfoLeft.textSize = infoSize
-            txtPhotoInfoRight.textSize = infoSize
-            val color = serverSettings.primaryColor?.let {
-                runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
-            } ?: Color.WHITE
-            txtPhotoInfoLeft.setTextColor(color)
-            txtPhotoInfoRight.setTextColor(color)
-            applyOverlayStyle()
-        } else {
-            photoInfoContainer.visibility = View.GONE
-        }
-        if (serverSettings.showClock) {
-            txtDateTime.visibility = View.VISIBLE
-            txtDateTime.textSize = framePrefs.clockSizeSp / 2f
-            txtDateTime.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            txtDateTime.setTextColor(
-                serverSettings.primaryColor?.let {
-                    runCatching { it.toColorInt() }.getOrDefault(Color.WHITE)
-                } ?: Color.WHITE,
-            )
-            applyOverlayStyle()
-        } else {
-            txtDateTime.visibility = View.GONE
-        }
+        overlay.applyPresentation(serverSettings)
     }
 
     private fun startPlaybackAfterSettingsLoaded() {
@@ -1147,8 +1016,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         startImageTimer()
-        handler.removeCallbacks(clockRunnable)
-        handler.post(clockRunnable)
+        overlay.startClock()
         updateWeatherTimer()
     }
 
@@ -1615,6 +1483,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(healthRunnable)
+        if (::overlay.isInitialized) overlay.stopClock()
         if (::cameraOverlay.isInitialized) cameraOverlay.dismiss()
         handler.removeCallbacks(hideNotificationRunnable)
         if (::framePresenter.isInitialized) framePresenter.clear()
@@ -1931,37 +1800,6 @@ class MainActivity : AppCompatActivity() {
         txtNotification.animate().cancel()
         txtNotification.visibility = View.GONE
         notificationShowing = false
-    }
-
-    private fun applyOverlayStyle() {
-        val density = resources.displayMetrics.density
-        val horizontal = (12 * density).toInt()
-        val vertical = (6 * density).toInt()
-        val radius = 10 * density
-        fun style(view: TextView, alpha: Int = framePrefs.overlayScrimAlpha) {
-            val color = view.currentTextColor
-            val luminance = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
-            val scrim = if (luminance >= 128) Color.BLACK else Color.WHITE
-            view.background = GradientDrawable().apply {
-                setColor(Color.argb(alpha.coerceIn(0, 255), Color.red(scrim), Color.green(scrim), Color.blue(scrim)))
-                cornerRadius = radius
-            }
-            view.setPadding(horizontal, vertical, horizontal, vertical)
-        }
-        style(txtDateTime)
-        style(txtOfflineIndicator)
-        val metadataAlpha = (framePrefs.overlayScrimAlpha * 0.8f).toInt()
-        style(txtPhotoInfoLeft, metadataAlpha)
-        style(txtPhotoInfoRight, metadataAlpha)
-        val margin = (framePrefs.safeMarginDp * density).toInt()
-        (txtDateTime.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.setMargins(margin, margin, margin, margin)
-            txtDateTime.layoutParams = it
-        }
-        (photoInfoContainer.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.setMargins(margin, margin, margin, margin)
-            photoInfoContainer.layoutParams = it
-        }
     }
 
     private companion object {
