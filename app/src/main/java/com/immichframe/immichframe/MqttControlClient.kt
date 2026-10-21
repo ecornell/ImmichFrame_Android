@@ -187,6 +187,34 @@ internal object MqttPayloads {
     }
 }
 
+/**
+ * Publishes the retained state topics that changed since the last publish, always from the
+ * store's newest snapshot. A store listener's argument can be stale by the time it gets here: two
+ * updates on different threads (a health sample on IO, a pause on main) each call their listeners
+ * after leaving the store's lock, so the older call can reach the broker last and leave an old
+ * retained state behind. Reading [latest] inside this lock makes the last publish the newest state.
+ */
+internal class MqttStatePublisher(
+    private val settings: MqttSettings,
+    private val latest: () -> RemoteFrameState,
+    private val publish: (topic: String, payload: String) -> Boolean,
+) {
+    // Only changed topics are sent: the photo attributes must not be republished for each
+    // brightness tick.
+    private val lastPublished = HashMap<String, String>()
+
+    /** A reconnect or Home Assistant restart needs the full state again. */
+    @Synchronized fun reset() = lastPublished.clear()
+
+    @Synchronized fun publishLatest() {
+        MqttPayloads.state(settings, latest()).forEach { (topic, payload) ->
+            if (lastPublished[topic] == payload) return@forEach
+            // A failed publish is retried with the next change or the next full resend.
+            if (publish(topic, payload)) lastPublished[topic] = payload
+        }
+    }
+}
+
 internal fun shouldAcceptMqttMessage(topic: String, retained: Boolean): Boolean =
     !retained || topic == "homeassistant/status"
 
@@ -201,10 +229,10 @@ internal class MqttControlClient(
     // boots before Wi-Fi or the broker is up retries its first connection here instead.
     private var retryExecutor: ScheduledExecutorService? = null
     private var retryDelayMillis = INITIAL_RETRY_MILLIS
-    private val stateListener: (RemoteFrameState) -> Unit = { publishState(it) }
-    // Every state change reaches publishState, so only changed topics are sent: the photo
-    // attributes must not be republished for each brightness tick. Guarded by itself.
-    private val lastPublished = HashMap<String, String>()
+    private val statePublisher = MqttStatePublisher(settings, state::snapshot) { topic, payload ->
+        publish(topic, payload, retained = true)
+    }
+    private val stateListener: (RemoteFrameState) -> Unit = { statePublisher.publishLatest() }
     // Retained on the broker, but kept to resend after a reconnect or Home Assistant restart.
     @Volatile private var lastPhotoImage: ByteArray? = null
 
@@ -341,9 +369,8 @@ internal class MqttControlClient(
         MqttPayloads.photoCleanup(settings).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
         lastPhotoImage?.let { publish(MqttPayloads.photoImageTopic(settings), it, retained = true) }
         publish("${settings.baseTopic}/availability", "online", retained = true)
-        // A reconnect or Home Assistant restart needs the full state again.
-        synchronized(lastPublished) { lastPublished.clear() }
-        publishState(state.snapshot())
+        statePublisher.reset()
+        statePublisher.publishLatest()
     }
 
     private fun handleMessage(topic: String, rawPayload: String) {
@@ -367,17 +394,6 @@ internal class MqttControlClient(
             "$base/action/dismiss" -> if (payload == "PRESS") commands.dismissOverlays()
             "$base/notify" -> FrameNotification.parse(rawPayload)?.let(commands::notify)
             "$base/camera" -> CameraRequest.parse(rawPayload)?.let(commands::showCamera)
-        }
-    }
-
-    private fun publishState(frameState: RemoteFrameState) {
-        // Publishing inside the lock keeps two racing updates from reaching the broker out of order.
-        synchronized(lastPublished) {
-            MqttPayloads.state(settings, frameState).forEach { (topic, payload) ->
-                if (lastPublished[topic] == payload) return@forEach
-                // A failed publish is retried with the next change or the next full resend.
-                if (publish(topic, payload, retained = true)) lastPublished[topic] = payload
-            }
         }
     }
 

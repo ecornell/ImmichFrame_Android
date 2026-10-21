@@ -73,7 +73,9 @@ runbook for those steps.
   MQTT test peer, publishes retained discovery/state, handles commands, resynchronizes after a
   retained Home Assistant birth, and publishes offline availability on stop. It also checks that
   only changed state topics are sent, that the current photo is published, and that a birth
-  resends the full state. No broker service,
+  resends the full state. `MqttStatePublisherTest` holds back an older update's listener until a
+  newer update has been published and checks that the newest state stays retained, and that 1,600
+  concurrent updates leave the final state on the broker. No broker service,
   credentials, extra dependencies, or external network are required. The test peer implements
   only the MQTT subset used here; TLS, broker restart/reconnect, and will delivery need broader
   broker/device qualification. Retained command filtering also has a separate policy unit test.
