@@ -137,7 +137,11 @@ target and a modern Android target. Do not run unqualified builds against produc
    activity starts; `ScheduleWakeReceiver` starts it directly), and on API 31+ that the alarm is
    exact (`dumpsys alarm` shows the app's alarm as exact while the exact-alarm grant is held, and
    inexact `setAndAllowWhileIdle` when it is revoked).
-8. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+8. Remote brightness: set 30% from Home Assistant, turn the display off and on (remotely, by
+   Active Times, and with the power button), and wake it with a `"wake": true` notification. The
+   panel must come back at 30%, Home Assistant must keep showing 30%, and a brightness change sent
+   while the display is off must not light the panel until it wakes.
+9. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
 TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this

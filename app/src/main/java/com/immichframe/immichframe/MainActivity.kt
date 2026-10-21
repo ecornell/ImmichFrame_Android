@@ -1257,14 +1257,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun screenBrightnessAction(brightness: Float) {
+        val requested = brightness.takeUnless { it < 0f }
+        remoteState.update { it.copy(brightness = requested) }
+        // A powered-down screen keeps brightness 0; waking applies the request.
+        if (isFrameInactive != true || overlayWoke) setWindowBrightness(requested)
+    }
+
+    /**
+     * Turning the screen back on restores the brightness last requested over RPC or MQTT (null
+     * for the system setting), so the window matches what Home Assistant reports. Powering down
+     * sets 0 without changing that request.
+     */
+    private fun applyRequestedBrightness() = setWindowBrightness(remoteState.snapshot().brightness)
+
+    private fun setWindowBrightness(brightness: Float?) {
         val lp = window.attributes
-        if (brightness < 0) {
-            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        } else {
-            lp.screenBrightness = brightness
-        }
+        lp.screenBrightness = brightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
         window.attributes = lp
-        remoteState.update { it.copy(brightness = brightness.takeUnless { value -> value < 0f }) }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -1418,9 +1427,7 @@ class MainActivity : AppCompatActivity() {
                         or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
                         or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
             )
-            val lp = window.attributes
-            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-            window.attributes = lp
+            applyRequestedBrightness()
             if (dimOverlay.isVisible) {
                 dimOverlay.animate()
                     .alpha(0f)
@@ -1483,9 +1490,7 @@ class MainActivity : AppCompatActivity() {
                     or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
                     or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
         )
-        val lp = window.attributes
-        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        window.attributes = lp
+        applyRequestedBrightness()
     }
 
     private fun onScreenTurnedOn() {
@@ -1531,9 +1536,7 @@ class MainActivity : AppCompatActivity() {
                     or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
                     or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
-        val lp = window.attributes
-        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        window.attributes = lp
+        applyRequestedBrightness()
         if (dimOverlay.isVisible) {
             dimOverlay.animate()
                 .alpha(0f)
