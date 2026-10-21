@@ -63,6 +63,8 @@ runbook for those steps.
   replacement, tap-to-dismiss, the held slideshow, and wake need a device check.
 - `CurrentPhotoTest`: the reported photo for single, split, video and offline-cache slides,
   people removed when not reported, and `currentPhoto` in the RPC state.
+- `FrameScheduleManagerTest`: the wake alarm is exact below API 31 and, from API 31, only while
+  the exact-alarm grant is held; otherwise it falls back to `setAndAllowWhileIdle`.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies
@@ -123,7 +125,14 @@ target and a modern Android target. Do not run unqualified builds against produc
    re-encodes anything above 720p with a 4500k cap; the settings, the Immich v3 metadata refresh
    a video needs before it will encode, and the gap for small high-bitrate videos are documented
    in `DEPLOYMENT.md` of the ImmichFrame repository. The W10J measured about 25 Mbit/s.
-7. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+7. Active Times wake on newer Android: both deployed frames are below the API levels this
+   concerns (W10J Android 7.1.2/API 25, WF1561 Android 8.1/API 27), so neither exercises it.
+   Before running on an API 29+ frame, check that the scheduled wake alarm actually brings
+   MainActivity to the front while it is in the background (Android 10 restricts background
+   activity starts; `ScheduleWakeReceiver` starts it directly), and on API 31+ that the alarm is
+   exact (`dumpsys alarm` shows the app's alarm as exact while the exact-alarm grant is held, and
+   inexact `setAndAllowWhileIdle` when it is revoked).
+8. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
 TLS/secret-storage changes and a broader unified rendering pipeline are deliberately outside this

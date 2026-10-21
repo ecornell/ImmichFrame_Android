@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.preference.PreferenceManager
 import java.util.Calendar
 
@@ -28,14 +29,30 @@ internal object FrameScheduleManager {
         val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
         val next = Helpers.nextActiveStart(schedule, Calendar.getInstance()) ?: return
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val exact = exactAlarmPermitted(Build.VERSION.SDK_INT) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) manager.canScheduleExactAlarms() else true
+        }
         try {
-            manager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent(context),
-            )
+            if (exact) {
+                manager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent(context),
+                )
+            } else {
+                manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent(context))
+            }
         } catch (_: SecurityException) {
-            manager.set(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent(context))
+            // The exact-alarm grant can be revoked between the check and the call.
+            manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent(context))
         }
     }
+
+    /**
+     * Exact alarms need no grant before Android 12 (API 31). From then on they need
+     * SCHEDULE_EXACT_ALARM (API 31-32, revocable) or USE_EXACT_ALARM (API 33+), which
+     * [canScheduleExactAlarms] reports; without it the wake alarm is inexact but still fires in Doze.
+     */
+    internal fun exactAlarmPermitted(sdkInt: Int, canScheduleExactAlarms: () -> Boolean): Boolean =
+        sdkInt < 31 || canScheduleExactAlarms()
 }
 
 class ScheduleStateReceiver : BroadcastReceiver() {
