@@ -68,7 +68,10 @@ runbook for those steps.
 - `HelpersTest`: next inactive-to-active schedule transitions, same-day/overnight intervals,
   adjacent intervals, always-active schedules, and spring/fall daylight-saving changes.
 - `RpcHttpServerIntegrationTest`: a real NanoHTTPD instance on an ephemeral loopback port verifies
-  authentication, state JSON, mutation dispatch, invalid JSON, and oversized-body rejection.
+  authentication, state JSON, mutation dispatch, invalid JSON, and oversized-body rejection. Raw
+  sockets check that an unread request body closes the keep-alive connection instead of being
+  parsed as the next request, that a bodyless one stays open, and that a ninth concurrent
+  connection is closed (`RpcHttpServer.MAX_CONNECTIONS`).
 - `MqttControlClientIntegrationTest`: the real Paho client connects to a bounded loopback-only
   MQTT test peer, publishes retained discovery/state, handles commands, resynchronizes after a
   retained Home Assistant birth, and publishes offline availability on stop. It also checks that

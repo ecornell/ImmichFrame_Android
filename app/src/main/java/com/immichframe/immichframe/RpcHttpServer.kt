@@ -16,7 +16,29 @@ class RpcHttpServer(
     private val rateLimiters = ClientRateLimiters()
     private val failedAuthRateLimiters = ClientRateLimiters(limit = 30)
 
+    init {
+        // NanoHTTPD's default starts an unbounded thread per connection.
+        setAsyncRunner(BoundedAsyncRunner(MAX_CONNECTIONS))
+    }
+
+    /** Whether this request's body has been read off the connection. */
+    private class BodyState(session: IHTTPSession) {
+        private val length = session.headers["content-length"]?.toLongOrNull()
+        // A PUT or POST without Content-Length may still carry a body that cannot be delimited.
+        val hasBody = length?.let { it > 0 } ?: (session.method == Method.PUT || session.method == Method.POST)
+        var read = false
+    }
+
     override fun serve(session: IHTTPSession): Response {
+        val body = BodyState(session)
+        val response = respond(session, body)
+        // NanoHTTPD reads the next keep-alive request from the same stream, so an unread body
+        // would be parsed as that request's start. Close instead; nothing here reads it otherwise.
+        if (body.hasBody && !body.read) response.closeConnection(true)
+        return response
+    }
+
+    private fun respond(session: IHTTPSession, bodyState: BodyState): Response {
         if (session.method == Method.GET && session.uri == "/health") {
             return json(Response.Status.OK, JSONObject().put("available", true))
         }
@@ -40,16 +62,17 @@ class RpcHttpServer(
         if (!session.uri.startsWith("/api/v1/")) return serveLegacy(session)
         val body = if (session.method == Method.PUT || session.method == Method.POST) {
             val length = session.headers["content-length"]?.toLongOrNull()
-                ?: return unreadBodyRejected("Content-Length is required")
+                ?: return badRequest("Content-Length is required")
             if (length !in 0..MAX_BODY_BYTES.toLong()) {
-                return unreadBodyRejected("Request body too large")
+                return badRequest("Request body too large")
             }
             if (session.headers["content-type"]?.substringBefore(';')?.trim()?.lowercase() != "application/json") {
-                return unreadBodyRejected("Content-Type must be application/json")
+                return badRequest("Content-Type must be application/json")
             }
             try {
                 val files = HashMap<String, String>()
                 session.parseBody(files)
+                bodyState.read = true
                 // NanoHTTPD keeps a POST body in "postData" but writes a PUT body to a temp file
                 // under "content"; Content-Length is already bounded above.
                 val body = if (session.method == Method.PUT) {
@@ -69,10 +92,8 @@ class RpcHttpServer(
         return json(status(result.status), result.json)
     }
 
-    // The request body was never read, so its bytes would be parsed as the next keep-alive request.
-    private fun unreadBodyRejected(error: String): Response =
+    private fun badRequest(error: String): Response =
         json(Response.Status.BAD_REQUEST, JSONObject().put("ok", false).put("error", error))
-            .apply { closeConnection(true) }
 
     private fun serveLegacy(session: IHTTPSession): Response {
         if (session.method != Method.POST) {
@@ -117,6 +138,23 @@ class RpcHttpServer(
     companion object {
         const val PORT = 53287
         private const val MAX_BODY_BYTES = 4096
+        /** Home Assistant polls with one or two connections; more are refused, not queued. */
+        const val MAX_CONNECTIONS = 8
+    }
+}
+
+/**
+ * Runs each connection on its own thread like NanoHTTPD's default, but closes a connection
+ * arriving while [maxConnections] are open. Only NanoHTTPD's accept thread calls [exec], so the
+ * check cannot race another exec; a connection ending concurrently only frees a slot.
+ */
+internal class BoundedAsyncRunner(private val maxConnections: Int) : NanoHTTPD.DefaultAsyncRunner() {
+    override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
+        if (running.size >= maxConnections) {
+            clientHandler.close()
+            return
+        }
+        super.exec(clientHandler)
     }
 }
 
