@@ -122,6 +122,9 @@ target and a modern Android target. Do not run unqualified builds against produc
    sleep, and break the stream mid-video: the poster must remain, the watchdog must advance, and
    no stopped timer may restart. Turning the preference off, or an older server, yields photos
    only. Record decoder support and PSS for 1080p H.264 and HEVC on each target device.
+   Players are released on a background thread and the next video waits for that release, so
+   check two videos back to back (both must play, not fall back to the poster), and that
+   skipping or sleeping during a stalled stream (block the server mid-prepare) causes no ANR.
 6. Check stream throughput on each frame's real Wi-Fi: play the largest-bitrate videos in the
    library several times and confirm none stall or are cut off by the watchdog (duration + 15 s).
    Videos are streamed through ImmichFrame at their Immich playback bitrate, often the original

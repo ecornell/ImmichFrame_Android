@@ -5,9 +5,12 @@ import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import android.view.TextureView
+import java.util.concurrent.Executors
 
 /** Fit/crop scale factors for a TextureView, which otherwise stretches video to its own bounds. */
 internal object VideoScaling {
@@ -83,6 +86,9 @@ internal class NativeVideoPlayer(
     private var completed = false
     private var videoWidth = 0
     private var videoHeight = 0
+    /** Players handed to [releaser] whose release has not finished; see [releasePlayer]. */
+    private var releasesInFlight = 0
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
         textureView.surfaceTextureListener = this
@@ -105,8 +111,22 @@ internal class NativeVideoPlayer(
         releasePlayer()
         paused = false
         val request = Request(uri, headers, crop, playAudio, revealMillis, listener)
+        pending = request
+        startPendingIfReady()
+    }
+
+    /**
+     * Starts the pending request once the texture is available and no earlier player is still
+     * releasing: a SurfaceTexture takes one producer at a time, so a new player attached while
+     * the old one is still connected would fail and leave only the poster.
+     */
+    private fun startPendingIfReady() {
+        if (releasesInFlight > 0) return
+        val request = pending ?: return
         val texture = textureView.surfaceTexture
-        if (textureView.isAvailable && texture != null) start(request, texture) else pending = request
+        if (!textureView.isAvailable || texture == null) return
+        pending = null
+        start(request, texture)
     }
 
     /** Pausing before the stream is prepared keeps it from starting once it is. */
@@ -191,23 +211,39 @@ internal class NativeVideoPlayer(
         if (revealed) release() else releasePlayer()
     }
 
+    /**
+     * Detaches the current player and releases it on [releaser]: reset() and release() wait for a
+     * stalled HTTP prepare and would block the main thread. Its listeners are cleared first and
+     * nothing here touches it after the handoff; the next video starts once it is gone.
+     */
     private fun releasePlayer() {
         generation++
         pending = null
         current = null
         prepared = false
         completed = false
-        player?.let { active ->
-            active.setOnVideoSizeChangedListener(null)
-            active.setOnPreparedListener(null)
-            active.setOnCompletionListener(null)
-            active.setOnErrorListener(null)
-            runCatching { active.reset() }
-            active.release()
-        }
+        val active = player
+        val output = surface
         player = null
-        surface?.release()
         surface = null
+        if (active == null) {
+            output?.release()
+            return
+        }
+        active.setOnVideoSizeChangedListener(null)
+        active.setOnPreparedListener(null)
+        active.setOnCompletionListener(null)
+        active.setOnErrorListener(null)
+        releasesInFlight++
+        releaser.execute {
+            runCatching { active.reset() }
+            runCatching { active.release() }
+            output?.release()
+            mainHandler.post {
+                releasesInFlight--
+                startPendingIfReady()
+            }
+        }
     }
 
     private fun applyScale() {
@@ -219,10 +255,7 @@ internal class NativeVideoPlayer(
     }
 
     override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-        pending?.let { request ->
-            pending = null
-            start(request, texture)
-        }
+        startPendingIfReady()
     }
 
     override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
@@ -247,5 +280,10 @@ internal class NativeVideoPlayer(
 
     private companion object {
         const val TAG = "NativeVideo"
+
+        /** One at a time, so releases finish in order; a stalled one delays the next video only. */
+        val releaser = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ImmichFrame-video-release").apply { isDaemon = true }
+        }
     }
 }
