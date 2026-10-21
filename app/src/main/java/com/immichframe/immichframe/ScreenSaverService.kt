@@ -1,21 +1,12 @@
 package com.immichframe.immichframe
 
 import android.annotation.SuppressLint
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.service.dreams.DreamService
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.ImageView
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -36,7 +27,7 @@ import retrofit2.Retrofit
 
 class ScreenSaverService : DreamService() {
     private var webViewRetryScope: CoroutineScope? = null
-    private var webView: WebView? = null
+    private lateinit var web: WebFrameController
     private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
@@ -56,7 +47,6 @@ class ScreenSaverService : DreamService() {
     private var nativeSessionToken = 0L
     @Volatile private var imageGeneration = 0L
     private val handler = Handler(Looper.getMainLooper())
-    private val webViewRetryToken = Any()
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
     private var portraitCache: Helpers.PreparedImage? = null
@@ -83,6 +73,16 @@ class ScreenSaverService : DreamService() {
         isInteractive = true
         setContentView(R.layout.screen_saver_view)
         webViewContainer = findViewById(R.id.webViewContainer)
+        web = WebFrameController(
+            this, webViewContainer, scope = { webViewRetryScope }, isActive = { useWebView },
+            openLinksInNewTask = true,
+            configureView = { view ->
+                view.setOnTouchListener { _, _ ->
+                    finish()
+                    true
+                }
+            },
+        )
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
         framePresenter = NativeFramePresenter(imageView1, imageView2)
@@ -105,7 +105,7 @@ class ScreenSaverService : DreamService() {
         stopNativePlayback()
         webViewRetryScope?.cancel()
         webViewRetryScope = null
-        destroyWebView()
+        if (::web.isInitialized) web.destroy()
         handler.removeCallbacksAndMessages(null)
     }
 
@@ -132,9 +132,9 @@ class ScreenSaverService : DreamService() {
     private fun previousAction() {
         if (useWebView) {
             // Simulate a key press
-            webView?.requestFocus()
+            web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
-            webView?.dispatchKeyEvent(event)
+            web.view?.dispatchKeyEvent(event)
         } else {
             val safePreviousImage = previousImage
             if (safePreviousImage != null) {
@@ -148,9 +148,9 @@ class ScreenSaverService : DreamService() {
     private fun nextAction() {
         if (useWebView) {
             // Simulate a key press
-            webView?.requestFocus()
+            web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
-            webView?.dispatchKeyEvent(event)
+            web.view?.dispatchKeyEvent(event)
         } else {
             stopImageTimer()
             getNextImage()
@@ -432,7 +432,6 @@ class ScreenSaverService : DreamService() {
         )
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         framePrefs = FramePreferences.load(prefs, resources.displayMetrics.density)
@@ -448,57 +447,7 @@ class ScreenSaverService : DreamService() {
         overlay.hide() // shown after server settings are applied
 
         if (useWebView) {
-            val activeWebView = ensureWebView()
-            cancelWebViewRetries()
-            activeWebView.webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-                    val url = request?.url
-                    if (url != null) {
-                        // Open the URL in the default browser. A service needs a new task, and
-                        // frames often have no browser at all.
-                        val intent = Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        try {
-                            startActivity(intent)
-                        } catch (error: ActivityNotFoundException) {
-                            Log.w("ScreenSaver", "No app can open $url")
-                        }
-                        return true
-                    }
-                    return false
-                }
-
-                override fun onReceivedError(
-                    view: WebView?,
-                    request: WebResourceRequest?,
-                    error: WebResourceError?
-                ) {
-                    super.onReceivedError(view, request, error)
-
-                    if (request?.isForMainFrame == true && error != null) {
-                        view?.loadUrl("file:///android_asset/error_page.html")
-
-                        postWebViewRetry(500) {
-                            val errorCode = error.errorCode
-                            val errorDescription = error.description.toString().replace("'", "\\'")
-                            view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
-                        }
-                        // Only a failed page load is retried; a failed image or favicon would
-                        // otherwise reload the whole page every 5 seconds.
-                        postWebViewRetry(5000) {
-                            if (webView === activeWebView) {
-                                activeWebView.loadUrl(savedUrl, if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
-                            }
-                        }
-                    }
-                }
-            }
-            activeWebView.settings.javaScriptEnabled = true
-            activeWebView.settings.cacheMode = WebSettings.LOAD_DEFAULT
-            activeWebView.settings.domStorageEnabled = true
-            loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
+            web.load(prefs, savedUrl, authSecret)
         } else {
             if (!Helpers.isValidServerUrl(savedUrl)) {
                 // A dream cannot open settings; end it rather than crash the shared process.
@@ -508,7 +457,7 @@ class ScreenSaverService : DreamService() {
             }
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
-            destroyWebView()
+            web.destroy()
             retrofit = Helpers.createRetrofit(
                 savedUrl, authSecret,
                 Helpers.clientIdentifier(
@@ -634,74 +583,4 @@ class ScreenSaverService : DreamService() {
         if (serverSettings.showWeatherDescription) weatherTimer.start(0L) else stopWeatherTimer()
     }
 
-    private fun loadWebViewWithRetry(
-        url: String,
-        attempt: Int = 1,
-        maxAttempts: Int = Int.MAX_VALUE,
-        headers: Map<String, String> = emptyMap(),
-    ) {
-        webViewRetryScope?.launch {
-            val reachable = withContext(Dispatchers.IO) {
-                Helpers.isServerReachable(url)
-            }
-
-            if (reachable) {
-                webView?.loadUrl(url, headers)
-            } else if (attempt <= maxAttempts) {
-                Toast.makeText(
-                    this@ScreenSaverService,
-                    "Connecting to server... Attempt $attempt of $maxAttempts",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                delay(5_000)
-                loadWebViewWithRetry(url, attempt + 1, maxAttempts, headers)
-            } else {
-                Toast.makeText(
-                    this@ScreenSaverService,
-                    "Could not connect to server after $maxAttempts attempts",
-                    Toast.LENGTH_LONG
-                ).show()
-
-                webView?.loadUrl(url, headers)
-            }
-        }
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun ensureWebView(): WebView {
-        webView?.let { return it }
-        return WebView(this).also { view ->
-            view.setBackgroundColor(Color.BLACK)
-            view.layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-            view.setOnTouchListener { _, _ ->
-                finish()
-                true
-            }
-            webViewContainer.addView(view)
-            webView = view
-        }
-    }
-
-    /** Error-page script and reload callbacks, posted with [webViewRetryToken] so they can be removed. */
-    private fun postWebViewRetry(delayMillis: Long, action: () -> Unit) {
-        handler.postAtTime(action, webViewRetryToken, SystemClock.uptimeMillis() + delayMillis)
-    }
-
-    private fun cancelWebViewRetries() = handler.removeCallbacksAndMessages(webViewRetryToken)
-
-    private fun destroyWebView() {
-        cancelWebViewRetries()
-        webView?.let { view ->
-            view.stopLoading()
-            view.loadUrl("about:blank")
-            view.clearHistory()
-            webViewContainer.removeView(view)
-            view.destroy()
-        }
-        webView = null
-    }
 }

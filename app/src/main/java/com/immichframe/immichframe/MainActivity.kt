@@ -3,7 +3,6 @@ package com.immichframe.immichframe
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
-import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -20,7 +19,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
-import android.os.SystemClock
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -34,11 +32,6 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
@@ -64,7 +57,7 @@ import androidx.core.view.isVisible
 import androidx.core.view.doOnNextLayout
 
 class MainActivity : AppCompatActivity() {
-    private var webView: WebView? = null
+    private lateinit var web: WebFrameController
     private lateinit var webViewContainer: FrameLayout
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
@@ -167,7 +160,6 @@ class MainActivity : AppCompatActivity() {
     private var framePrefs = FramePreferences()
     private val isImageTimerRunning get() = imageTimer.isRunning
     private val handler = Handler(Looper.getMainLooper())
-    private val webViewRetryToken = Any()
     // Kept decoded: live responses no longer carry the image as Base64.
     private var previousImage: Helpers.PreparedImage? = null
     private var currentImage: Helpers.PreparedImage? = null
@@ -241,6 +233,10 @@ class MainActivity : AppCompatActivity() {
             .apply()
 
         webViewContainer = findViewById(R.id.webViewContainer)
+        web = WebFrameController(
+            this, webViewContainer, scope = { lifecycleScope }, isActive = { useWebView },
+            openLinksInNewTask = false,
+        )
         imageView1 = findViewById(R.id.imageView1)
         imageView2 = findViewById(R.id.imageView2)
         framePresenter = NativeFramePresenter(imageView1, imageView2)
@@ -789,7 +785,6 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         framePrefs = FramePreferences.load(prefs, resources.displayMetrics.density)
@@ -848,62 +843,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (useWebView) {
-            val activeWebView = ensureWebView()
-            cancelWebViewRetries()
-
-            activeWebView.webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-                    val url = request?.url
-                    if (url != null) {
-                        // Open the URL in the default browser; frames often have none.
-                        try {
-                            startActivity(Intent(Intent.ACTION_VIEW, url))
-                        } catch (error: ActivityNotFoundException) {
-                            Log.w("WebView", "No app can open $url")
-                        }
-                        return true
-                    }
-                    return false
-                }
-
-                override fun onReceivedError(
-                    view: WebView?,
-                    request: WebResourceRequest?,
-                    error: WebResourceError?
-                ) {
-                    super.onReceivedError(view, request, error)
-
-                    if (request?.isForMainFrame == true && error != null) {
-                        view?.loadUrl("file:///android_asset/error_page.html")
-
-                        postWebViewRetry(500) {
-                            val errorCode = error.errorCode
-                            val errorDescription = error.description.toString().replace("'", "\\'")
-                            view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
-                        }
-                        // Only a failed page load is retried; a failed image or favicon would
-                        // otherwise reload the whole page every 5 seconds.
-                        postWebViewRetry(5000) {
-                            //check url again in case the user has changed it
-                            val currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
-                            if (currentUrl.isNotEmpty() && webView === activeWebView) {
-                                activeWebView.loadUrl(
-                                    currentUrl,
-                                    if (authSecret.isBlank()) emptyMap()
-                                    else mapOf("Authorization" to "Bearer $authSecret"),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            activeWebView.settings.javaScriptEnabled = true
-            activeWebView.settings.cacheMode = WebSettings.LOAD_DEFAULT
-            activeWebView.settings.domStorageEnabled = true
-            loadWebViewWithRetry(savedUrl, headers = if (authSecret.isBlank()) emptyMap() else mapOf("Authorization" to "Bearer $authSecret"))
+            web.load(prefs, savedUrl, authSecret)
         } else {
             if (!Helpers.isValidServerUrl(savedUrl)) {
                 Toast.makeText(this, "Invalid server URL: $savedUrl", Toast.LENGTH_LONG).show()
@@ -912,7 +852,7 @@ class MainActivity : AppCompatActivity() {
             }
             nativeSessionToken = playbackSession.activate()
             hasAppliedSettingsForSession = false
-            destroyWebView()
+            web.destroy()
             retrofit = Helpers.createRetrofit(
                 savedUrl, authSecret,
                 Helpers.clientIdentifier(PreferenceManager.getDefaultSharedPreferences(applicationContext)),
@@ -1049,7 +989,7 @@ class MainActivity : AppCompatActivity() {
     private fun previousAction() {
         if (useWebView) {
             // Simulate a key press
-            webView?.requestFocus()
+            web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
             dispatchKeyEvent(event)
         } else {
@@ -1070,7 +1010,7 @@ class MainActivity : AppCompatActivity() {
     private fun nextAction() {
         if (useWebView) {
             // Simulate a key press
-            webView?.requestFocus()
+            web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
             dispatchKeyEvent(event)
         } else {
@@ -1086,7 +1026,7 @@ class MainActivity : AppCompatActivity() {
     private fun pauseAction() {
         if (useWebView) {
             // Simulate a key press
-            webView?.requestFocus()
+            web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SPACE)
             dispatchKeyEvent(event)
         } else {
@@ -1300,8 +1240,7 @@ class MainActivity : AppCompatActivity() {
             stopNativePlayback()
             if (useWebView) {
                 // A pending error-page retry would reload the page on the dark screen.
-                cancelWebViewRetries()
-                webView?.loadUrl("about:blank")
+                web.blank()
             }
             dimOverlay.apply {
                 visibility = View.VISIBLE
@@ -1488,7 +1427,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(hideNotificationRunnable)
         if (::framePresenter.isInitialized) framePresenter.clear()
         if (::videoPlayer.isInitialized) videoPlayer.release()
-        destroyWebView()
+        if (::web.isInitialized) web.destroy()
         super.onDestroy()
         rpcServer?.stop()
         rpcServer = null
@@ -1497,42 +1436,6 @@ class MainActivity : AppCompatActivity() {
         stopNativePlayback()
         unregisterReceiver(screenStateReceiver)
         handler.removeCallbacksAndMessages(null)
-    }
-
-    private fun loadWebViewWithRetry(
-        url: String,
-        attempt: Int = 1,
-        maxAttempts: Int = Int.MAX_VALUE,
-        headers: Map<String, String> = emptyMap(),
-    ) {
-        lifecycleScope.launch {
-            if (!useWebView) return@launch
-            val reachable = withContext(Dispatchers.IO) {
-                Helpers.isServerReachable(url)
-            }
-
-            if (!useWebView) return@launch
-            if (reachable) {
-                webView?.loadUrl(url, headers)
-            } else if (attempt <= maxAttempts) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Connecting to server... Attempt $attempt of $maxAttempts",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                delay(5_000)
-                loadWebViewWithRetry(url, attempt + 1, maxAttempts, headers)
-            } else {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Could not connect to server after $maxAttempts attempts",
-                    Toast.LENGTH_LONG
-                ).show()
-
-                webView?.loadUrl(url, headers)
-            }
-        }
     }
 
     /** See the manifest's configChanges: views re-lay out themselves; only sized-by-code parts need redoing. */
@@ -1650,37 +1553,6 @@ class MainActivity : AppCompatActivity() {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
     }.getOrDefault("unknown")
 
-    private fun ensureWebView(): WebView {
-        webView?.let { return it }
-        return WebView(this).also { view ->
-            view.setBackgroundColor(Color.BLACK)
-            view.layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-            webViewContainer.addView(view)
-            webView = view
-        }
-    }
-
-    /** Error-page script and reload callbacks, posted with [webViewRetryToken] so they can be removed. */
-    private fun postWebViewRetry(delayMillis: Long, action: () -> Unit) {
-        handler.postAtTime(action, webViewRetryToken, SystemClock.uptimeMillis() + delayMillis)
-    }
-
-    private fun cancelWebViewRetries() = handler.removeCallbacksAndMessages(webViewRetryToken)
-
-    private fun destroyWebView() {
-        cancelWebViewRetries()
-        webView?.let { view ->
-            view.stopLoading()
-            view.loadUrl("about:blank")
-            view.clearHistory()
-            webViewContainer.removeView(view)
-            view.destroy()
-        }
-        webView = null
-    }
 
     /**
      * Shows [notification] now, or after those already waiting. A frame whose display is off drops
