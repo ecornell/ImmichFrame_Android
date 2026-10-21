@@ -60,22 +60,8 @@ class ScreenSaverService : DreamService() {
     private var retrofit: Retrofit? = null
     private lateinit var apiService: Helpers.ApiService
     private var useWebView = true
-    private var frameBackground = FrameBackground.THUMBHASH
-    private var frameScale = FrameScale.FIT
-    private var splitGapPx = 6
-    private var overlayFadeSeconds = 0
-    private var burnInEnabled = true
     private val burnInController = OverlayBurnInController()
-    private var clockSizeSp = 40
-    private var metadataSizeSp = 24
-    private var overlayScrimAlpha = 96
-    private var safeMarginDp = 24
-    private var edgeFeatherPx = 32
-    private var backgroundBlurRadius = 16
-    private var backgroundDarkness = 84
-    private var zoomFrameRate = 15
-    private var transitionFrameRate = 30
-    private var showCurrentDate = true
+    private var framePrefs = FramePreferences()
     private var currentWeather = ""
     private var imageCall: Call<Helpers.ImageResponse>? = null
     private var weatherCall: Call<Helpers.Weather>? = null
@@ -245,8 +231,8 @@ class ScreenSaverService : DreamService() {
                     return@launch
                 }
                 rendered = FrameRenderer.render(
-                    width, height, first, second, frameScale, frameBackground, splitGapPx,
-                    edgeFeatherPx, backgroundBlurRadius, backgroundDarkness,
+                    width, height, first, second, framePrefs.frameScale, framePrefs.frameBackground, framePrefs.splitGapPx,
+                    framePrefs.edgeFeatherPx, framePrefs.backgroundBlurRadius, framePrefs.backgroundDarkness,
                 )
                 withContext(Dispatchers.Main) {
                     if (generation == imageGeneration && playbackSession.isCurrent(token)) {
@@ -279,13 +265,13 @@ class ScreenSaverService : DreamService() {
             transitionMillis = (serverSettings.transitionDuration * 1_000).toLong(),
             zoomEnabled = serverSettings.imageZoom,
             zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
-            zoomFramesPerSecond = zoomFrameRate,
-            transitionFramesPerSecond = transitionFrameRate,
+            zoomFramesPerSecond = framePrefs.zoomFrameRate,
+            transitionFramesPerSecond = framePrefs.transitionFrameRate,
         ) {
             lastFrameMetaLeft = it.left
             lastFrameMetaRight = it.right
             updatePhotoInfo(it.left, it.right)
-            val distance = if (burnInEnabled) 12f else 0f
+            val distance = if (framePrefs.burnInEnabled) 12f else 0f
             val (x, y) = burnInController.offset(System.currentTimeMillis() / 300_000L, distance)
             txtDateTime.translationX = x
             txtDateTime.translationY = y
@@ -311,8 +297,8 @@ class ScreenSaverService : DreamService() {
         txtPhotoInfoRight.visibility = if (rightText.isBlank()) View.GONE else View.VISIBLE
         photoInfoContainer.animate().cancel()
         photoInfoContainer.alpha = 1f
-        if (overlayFadeSeconds > 0) {
-            photoInfoContainer.animate().alpha(0f).setStartDelay(overlayFadeSeconds * 1000L).start()
+        if (framePrefs.overlayFadeSeconds > 0) {
+            photoInfoContainer.animate().alpha(0f).setStartDelay(framePrefs.overlayFadeSeconds * 1000L).start()
         }
     }
 
@@ -336,7 +322,7 @@ class ScreenSaverService : DreamService() {
                 ""
             }
 
-            val dt = if (showCurrentDate && formattedDate.isNotEmpty()) {
+            val dt = if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) {
                 "$formattedDate\n$formattedTime"
             } else {
                 formattedTime
@@ -344,7 +330,7 @@ class ScreenSaverService : DreamService() {
 
             txtDateTime.text = SpannableString(dt).apply {
                 val start =
-                    if (showCurrentDate && formattedDate.isNotEmpty()) formattedDate.length + 1 else 0
+                    if (framePrefs.showCurrentDate && formattedDate.isNotEmpty()) formattedDate.length + 1 else 0
                 setSpan(RelativeSizeSpan(2f), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
@@ -547,25 +533,7 @@ class ScreenSaverService : DreamService() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun loadSettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        frameBackground = runCatching {
-            FrameBackground.valueOf(prefs.getString("frameBackground", "THUMBHASH")!!)
-        }.getOrDefault(FrameBackground.THUMBHASH)
-        frameScale = runCatching {
-            FrameScale.valueOf(prefs.getString("frameScale", "FIT")!!)
-        }.getOrDefault(FrameScale.FIT)
-        splitGapPx = (prefs.getInt("splitGapDp", 6) * resources.displayMetrics.density).toInt()
-        overlayFadeSeconds = prefs.getInt("overlayFadeSeconds", 0)
-        burnInEnabled = prefs.getBoolean("burnInEnabled", true)
-        clockSizeSp = prefs.getInt("clockSizeSp", 40)
-        metadataSizeSp = prefs.getInt("metadataSizeSp", 24)
-        overlayScrimAlpha = prefs.getInt("overlayScrimAlpha", 96)
-        safeMarginDp = prefs.getInt("safeMarginDp", 24)
-        edgeFeatherPx = (prefs.getInt("edgeFeatherDp", 32) * resources.displayMetrics.density).toInt()
-        backgroundBlurRadius = prefs.getInt("backgroundBlurRadius", 16).coerceIn(0, 24)
-        backgroundDarkness = prefs.getInt("backgroundDarkness", 84).coerceIn(0, 200)
-        zoomFrameRate = prefs.getInt("zoomFrameRate", 15).coerceIn(10, 60)
-        transitionFrameRate = prefs.getInt("transitionFrameRate", 30).coerceIn(10, 60)
-        showCurrentDate = prefs.getBoolean("showCurrentDate", true)
+        framePrefs = FramePreferences.load(prefs, resources.displayMetrics.density)
         stopNativePlayback()
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", false)
@@ -720,7 +688,7 @@ class ScreenSaverService : DreamService() {
 
         if (serverSettings.showPhotoDate || serverSettings.showImageLocation) {
             photoInfoContainer.visibility = View.VISIBLE
-            val size = metadataSizeSp.toFloat()
+            val size = framePrefs.metadataSizeSp.toFloat()
             txtPhotoInfoLeft.textSize = size
             txtPhotoInfoRight.textSize = size
             val color = serverSettings.primaryColor?.let {
@@ -734,7 +702,7 @@ class ScreenSaverService : DreamService() {
         }
         if (serverSettings.showClock) {
             txtDateTime.visibility = View.VISIBLE
-            txtDateTime.textSize = clockSizeSp / 2f
+            txtDateTime.textSize = framePrefs.clockSizeSp / 2f
             txtDateTime.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             txtDateTime.setTextColor(
                 serverSettings.primaryColor?.let {
@@ -866,7 +834,7 @@ class ScreenSaverService : DreamService() {
         val horizontal = (12 * density).toInt()
         val vertical = (6 * density).toInt()
         val radius = 10 * density
-        fun style(view: TextView, alpha: Int = overlayScrimAlpha) {
+        fun style(view: TextView, alpha: Int = framePrefs.overlayScrimAlpha) {
             val color = view.currentTextColor
             val luminance = (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
             val scrim = if (luminance >= 128) Color.BLACK else Color.WHITE
@@ -878,10 +846,10 @@ class ScreenSaverService : DreamService() {
         }
         style(txtDateTime)
         style(txtOfflineIndicator)
-        val metadataAlpha = (overlayScrimAlpha * 0.8f).toInt()
+        val metadataAlpha = (framePrefs.overlayScrimAlpha * 0.8f).toInt()
         style(txtPhotoInfoLeft, metadataAlpha)
         style(txtPhotoInfoRight, metadataAlpha)
-        val margin = (safeMarginDp * density).toInt()
+        val margin = (framePrefs.safeMarginDp * density).toInt()
         (txtDateTime.layoutParams as? FrameLayout.LayoutParams)?.let {
             it.setMargins(margin, margin, margin, margin)
             txtDateTime.layoutParams = it
