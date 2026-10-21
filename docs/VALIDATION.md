@@ -36,6 +36,8 @@ runbook for those steps.
   `AsyncRefreshTimerTest` verifies the shared 30-second server-settings cadence, single in-flight
   refresh, lifecycle cancellation, and rejection of stale completions. Activity and DreamService
   share these timer implementations so running flags cannot drift from callback removal.
+- `RemoteStateStoreTest`: 4,000 updates from eight threads are neither lost nor duplicated, each
+  listener call reports its own update, and the value is visible before listeners run.
 - `FramePreferencesTest`: native presentation preference defaults, range clamping, dp-to-pixel
   conversion, and the fallback for unknown background/scale names.
 - `OverlayFormatTest`: photo captions (date, location, split slides), the date/time text and
