@@ -95,6 +95,45 @@ class MqttControlClientIntegrationTest {
         }
     }
 
+    @Test(timeout = 25_000) fun systemBrightnessButtonAndRemovalFromHomeAssistant() {
+        TestBroker().use { broker ->
+            val state = RemoteStateStore(RemoteFrameState(version = "integration", brightness = 0.4f))
+            val client = MqttControlClient(
+                MqttSettings("tcp://127.0.0.1:${broker.port}", "", "", "integration"),
+                state,
+                object : RemoteCommands {
+                    override fun setDisplayActive(active: Boolean) = Unit
+                    override fun setPaused(paused: Boolean) = Unit
+                    override fun togglePaused() = Unit
+                    override fun setBrightness(brightness: Float?) { state.update { it.copy(brightness = brightness) } }
+                    override fun next() = Unit
+                    override fun previous() = Unit
+                    override fun refresh() = Unit
+                    override fun openSettings() = Unit
+                    override fun notify(notification: FrameNotification) = Unit
+                    override fun showCamera(request: CameraRequest) = true
+                    override fun dismissOverlays() = Unit
+                },
+            )
+            val base = "immichframe/integration"
+            val discovery = "homeassistant/switch/immichframe_integration/display/config"
+            try {
+                assertTrue(client.start())
+                assertEquals("40", broker.awaitPublication("$base/brightness/state").payload)
+                broker.publish("$base/action/system_brightness", "PRESS")
+                assertEquals("None", broker.awaitPublication("$base/brightness/state").payload)
+
+                client.stop(removeFromHomeAssistant = true)
+                val removed = broker.awaitPublication(discovery)
+                assertEquals("", removed.payload)
+                assertTrue(removed.retained)
+                assertEquals("offline", broker.awaitPublication("$base/availability").payload)
+            } finally {
+                client.stop()
+            }
+        }
+    }
+
     @Test(timeout = 25_000) fun photoImageIsPublishedRetainedAndResentAfterBirth() {
         TestBroker().use { broker ->
             val state = RemoteStateStore(RemoteFrameState(version = "integration"))

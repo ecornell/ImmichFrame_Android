@@ -25,10 +25,15 @@ internal data class MqttSettings(
     val photoImage: PhotoImageMode = PhotoImageMode.OFF,
     /** Whether the frame exposes a thermal zone; the W10J has none, so it gets no temperature entity. */
     val hasTemperature: Boolean = true,
+    /** The Android model, shown as the Home Assistant device model. */
+    val model: String = "Android Frame",
 ) {
     val publishesPhotoImage: Boolean get() = publishPhoto && photoImage != PhotoImageMode.OFF
 
     val baseTopic: String get() = "immichframe/$deviceId"
+
+    /** Home Assistant announces a restart on this topic. */
+    val birthTopic: String get() = "$discoveryPrefix/status"
 }
 
 internal object MqttPayloads {
@@ -37,7 +42,7 @@ internal object MqttPayloads {
         .put("identifiers", JSONArray().put("immichframe_${settings.deviceId}"))
         .put("name", "ImmichFrame ${settings.deviceId.takeLast(6)}")
         .put("manufacturer", "ImmichFrame")
-        .put("model", "Android Frame")
+        .put("model", settings.model)
         .put("sw_version", version)
 
     fun discovery(settings: MqttSettings, version: String): Map<String, String> {
@@ -70,7 +75,7 @@ internal object MqttPayloads {
         }
         val buttons = listOf(
             "next" to "Next photo", "previous" to "Previous photo", "refresh" to "Refresh",
-            "dismiss" to "Dismiss overlay",
+            "dismiss" to "Dismiss overlay", "system_brightness" to "Use system brightness",
         )
         for ((id, name) in buttons) {
             entries += config("button", id, name).let { (topic, json) ->
@@ -86,13 +91,13 @@ internal object MqttPayloads {
         }
         entries += config("binary_sensor", "offline_fallback", "Offline fallback").let { (topic, json) ->
             topic to json.put("state_topic", "$base/offline_fallback/state").put("payload_on", "ON").put("payload_off", "OFF")
-                .put("icon", "mdi:cloud-off-outline")
+                .put("icon", "mdi:cloud-off-outline").put("entity_category", "diagnostic")
         }
         entries += config("sensor", "presentation_mode", "Presentation mode").let { (topic, json) ->
-            topic to json.put("state_topic", "$base/presentation_mode/state")
+            topic to json.put("state_topic", "$base/presentation_mode/state").put("entity_category", "diagnostic")
         }
         entries += config("sensor", "version", "App version").let { (topic, json) ->
-            topic to json.put("state_topic", "$base/version/state")
+            topic to json.put("state_topic", "$base/version/state").put("entity_category", "diagnostic")
         }
         val photoEntries = listOf(
             config("sensor", "current_photo", "Current photo").let { (topic, json) ->
@@ -141,7 +146,8 @@ internal object MqttPayloads {
             put("$base/ip_address", health.ipAddress ?: PAYLOAD_NONE)
             put("$base/last_boot", CurrentPhoto.isoUtc(health.bootedAtMillis))
             put("$base/app_started", CurrentPhoto.isoUtc(health.appStartedAtMillis))
-            put("$base/last_photo", lastPhotoMillis?.let(CurrentPhoto::isoUtc) ?: PAYLOAD_NONE)
+            // To the minute: each slide sets it, and per-slide changes would flood the recorder.
+            put("$base/last_photo", lastPhotoMillis?.let { CurrentPhoto.isoUtc(it - it % 60_000L) } ?: PAYLOAD_NONE)
             if (settings.hasTemperature) put("$base/temperature", health.temperatureC?.toString() ?: PAYLOAD_NONE)
         }
     }
@@ -172,12 +178,20 @@ internal object MqttPayloads {
 
     private const val PAYLOAD_NONE = "None"
 
+    /** Rounded: truncating 0.53f * 100f gives 52, so the slider would jump back after a set. */
+    fun brightnessPercent(brightness: Float): Int = Math.round(brightness * 100f).coerceIn(0, 100)
+
+    /** Every retained config this frame can publish, each emptied, which removes the device from Home Assistant. */
+    fun removal(settings: MqttSettings): Map<String, String> =
+        discovery(settings, "").mapValues { "" } + photoCleanup(settings.copy(publishPhoto = false))
+
     fun state(settings: MqttSettings, state: RemoteFrameState): Map<String, String> {
         val base = settings.baseTopic
         return mapOf(
             "$base/display/state" to if (state.displayActive) "ON" else "OFF",
             "$base/playback/state" to if (state.paused) "OFF" else "ON",
-            "$base/brightness/state" to ((state.brightness ?: 1f) * 100f).toInt().coerceIn(0, 100).toString(),
+            // System brightness has no level to show: "None" is the number entity's unknown state.
+            "$base/brightness/state" to (state.brightness?.let { brightnessPercent(it).toString() } ?: PAYLOAD_NONE),
             "$base/server_connected/state" to if (state.serverConnected) "ON" else "OFF",
             "$base/offline_fallback/state" to if (state.offlineFallback) "ON" else "OFF",
             "$base/presentation_mode/state" to state.presentationMode,
@@ -215,8 +229,8 @@ internal class MqttStatePublisher(
     }
 }
 
-internal fun shouldAcceptMqttMessage(topic: String, retained: Boolean): Boolean =
-    !retained || topic == "homeassistant/status"
+internal fun shouldAcceptMqttMessage(topic: String, retained: Boolean, birthTopic: String = "homeassistant/status"): Boolean =
+    !retained || topic == birthTopic
 
 internal class MqttControlClient(
     private val settings: MqttSettings,
@@ -254,7 +268,7 @@ internal class MqttControlClient(
                 override fun deliveryComplete(token: IMqttDeliveryToken?) = Unit
                 override fun messageArrived(topic: String, message: MqttMessage) {
                     if (!running) return
-                    if (!shouldAcceptMqttMessage(topic, message.isRetained)) {
+                    if (!shouldAcceptMqttMessage(topic, message.isRetained, settings.birthTopic)) {
                         Log.w(TAG, "Ignoring retained MQTT command on $topic")
                         return
                     }
@@ -339,9 +353,11 @@ internal class MqttControlClient(
 
     /**
      * Returns at once; the offline publish and disconnect, which can take about three seconds
-     * against a slow broker, run on the lifecycle thread.
+     * against a slow broker, run on the lifecycle thread. [removeFromHomeAssistant] is for the
+     * user turning MQTT off or moving the frame to another identity, not for a restart: it first
+     * empties every retained discovery config so no unavailable device is left behind.
      */
-    fun stop() {
+    fun stop(removeFromHomeAssistant: Boolean = false) {
         running = false
         retryExecutor?.shutdownNow()
         retryExecutor = null
@@ -349,6 +365,15 @@ internal class MqttControlClient(
         val mqtt = client ?: return
         client = null
         lifecycle.execute {
+            if (mqtt.isConnected && removeFromHomeAssistant) {
+                // Emptied retained configs delete the entities; the device goes with its last one.
+                MqttPayloads.removal(settings).forEach { (topic, payload) ->
+                    runCatching {
+                        mqtt.publish(topic, MqttMessage(payload.toByteArray()).apply { qos = 1; isRetained = true })
+                            .waitForCompletion(1_000)
+                    }.onFailure { Log.w(TAG, "MQTT removal failed for $topic: ${it.message}") }
+                }
+            }
             if (mqtt.isConnected) {
                 runCatching {
                     mqtt.publish(
@@ -370,19 +395,27 @@ internal class MqttControlClient(
                 arrayOf(
                     "$base/display/set", "$base/playback/set", "$base/brightness/set",
                     "$base/action/next", "$base/action/previous", "$base/action/refresh",
-                    "$base/action/dismiss", "$base/notify", "$base/camera", "homeassistant/status",
+                    "$base/action/dismiss", "$base/action/system_brightness", "$base/notify", "$base/camera",
+                    settings.birthTopic,
                 ),
-                intArrayOf(1, 1, 1, 1, 1, 1, 1, 1, 1, 0),
+                intArrayOf(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0),
             )
             publishDiscoveryAndState()
         }.onFailure { Log.w(TAG, "MQTT setup failed", it) }
     }
 
     private fun publishDiscoveryAndState() {
-        MqttPayloads.discovery(settings, state.snapshot().version).forEach { (topic, payload) ->
-            publish(topic, payload, retained = true)
+        val configs = MqttPayloads.discovery(settings, state.snapshot().version) + MqttPayloads.photoCleanup(settings)
+        // Count rather than stop at a failure: the rest still reach the broker.
+        val failed = configs.count { (topic, payload) -> !publish(topic, payload, retained = true) }
+        // Without a retry a missing entity would stay missing until the next reconnect or Home
+        // Assistant restart. A disconnect needs none: connectComplete republishes everything.
+        if (failed > 0 && client?.isConnected == true) {
+            Log.w(TAG, "$failed MQTT discovery publishes failed; retrying")
+            runCatching {
+                retryExecutor?.schedule({ if (running) publishDiscoveryAndState() }, DISCOVERY_RETRY_MILLIS, TimeUnit.MILLISECONDS)
+            }
         }
-        MqttPayloads.photoCleanup(settings).forEach { (topic, payload) -> publish(topic, payload, retained = true) }
         lastPhotoImage?.let { publish(MqttPayloads.photoImageTopic(settings), it, retained = true) }
         publish("${settings.baseTopic}/availability", "online", retained = true)
         statePublisher.reset()
@@ -393,7 +426,7 @@ internal class MqttControlClient(
         val payload = rawPayload.trim()
         val base = settings.baseTopic
         when (topic) {
-            "homeassistant/status" -> if (payload.equals("online", true)) publishDiscoveryAndState()
+            settings.birthTopic -> if (payload.equals("online", true)) publishDiscoveryAndState()
             "$base/display/set" -> when (payload.uppercase()) {
                 "ON" -> commands.setDisplayActive(true)
                 "OFF" -> commands.setDisplayActive(false)
@@ -408,6 +441,7 @@ internal class MqttControlClient(
             "$base/action/previous" -> if (payload == "PRESS") commands.previous()
             "$base/action/refresh" -> if (payload == "PRESS") commands.refresh()
             "$base/action/dismiss" -> if (payload == "PRESS") commands.dismissOverlays()
+            "$base/action/system_brightness" -> if (payload == "PRESS") commands.setBrightness(null)
             "$base/notify" -> FrameNotification.parse(rawPayload)?.let(commands::notify)
             "$base/camera" -> CameraRequest.parse(rawPayload)?.let(commands::showCamera)
         }
@@ -453,5 +487,6 @@ internal class MqttControlClient(
         }
         private const val INITIAL_RETRY_MILLIS = 5_000L
         private const val MAX_RETRY_MILLIS = 120_000L
+        private const val DISCOVERY_RETRY_MILLIS = 10_000L
     }
 }

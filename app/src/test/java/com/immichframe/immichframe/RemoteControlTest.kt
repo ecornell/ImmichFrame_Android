@@ -192,6 +192,48 @@ class RemoteControlTest {
         assertTrue(shouldAcceptMqttMessage("homeassistant/status", retained = true))
     }
 
+    @Test fun birthTopicFollowsTheDiscoveryPrefix() {
+        val settings = MqttSettings("tcp://b", "", "", "0123456789abcdef", discoveryPrefix = "ha")
+        assertEquals("ha/status", settings.birthTopic)
+        assertTrue(shouldAcceptMqttMessage("ha/status", retained = true, birthTopic = settings.birthTopic))
+        assertFalse(shouldAcceptMqttMessage("homeassistant/status", retained = true, birthTopic = settings.birthTopic))
+    }
+
+    @Test fun brightnessRoundTripsEveryPercentAndSystemIsUnknown() {
+        val settings = MqttSettings("tcp://b", "", "", "0123456789abcdef")
+        val topic = "immichframe/0123456789abcdef/brightness/state"
+        // A set arrives as percent / 100f, as in the brightness/set handler.
+        for (percent in 0..100) {
+            assertEquals("$percent", MqttPayloads.state(settings, RemoteFrameState(brightness = percent / 100f))[topic])
+        }
+        assertEquals("None", MqttPayloads.state(settings, RemoteFrameState(brightness = null))[topic])
+    }
+
+    @Test fun discoveryNamesTheModelAndMarksDiagnostics() {
+        val settings = MqttSettings("tcp://b", "", "", "0123456789abcdef", model = "WF1561")
+        val discovery = MqttPayloads.discovery(settings, "1.2.3")
+        fun config(component: String, id: String) =
+            JSONObject(discovery.getValue("homeassistant/$component/immichframe_0123456789abcdef/$id/config"))
+        assertEquals("WF1561", config("switch", "display").getJSONObject("device").getString("model"))
+        for ((component, id) in listOf("sensor" to "version", "sensor" to "presentation_mode", "binary_sensor" to "offline_fallback")) {
+            assertEquals(id, "diagnostic", config(component, id).getString("entity_category"))
+        }
+        assertFalse(config("switch", "display").has("entity_category"))
+        assertEquals(
+            "immichframe/0123456789abcdef/action/system_brightness",
+            config("button", "system_brightness").getString("command_topic"),
+        )
+    }
+
+    @Test fun removalEmptiesEveryConfigAndTheLastPhoto() {
+        val settings = MqttSettings("tcp://b", "", "", "0123456789abcdef", photoImage = PhotoImageMode.THUMBNAIL)
+        val removal = MqttPayloads.removal(settings)
+        assertTrue(removal.keys.containsAll(MqttPayloads.discovery(settings, "1.2.3").keys))
+        assertTrue(removal.containsKey("immichframe/0123456789abcdef/photo/attributes"))
+        assertTrue(removal.containsKey("immichframe/0123456789abcdef/photo/image"))
+        assertTrue(removal.values.all { it.isEmpty() })
+    }
+
     @Test fun limitCheckDoesNotRecordAnAttempt() {
         val limits = ClientRateLimiters(limit = 2, windowMillis = 100)
         assertFalse(limits.isLimited("a", 0))
