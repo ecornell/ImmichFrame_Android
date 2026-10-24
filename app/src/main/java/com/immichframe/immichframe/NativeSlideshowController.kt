@@ -321,7 +321,8 @@ internal class NativeSlideshowController(
         framePresenter.present(
             frame = frame,
             transitionMillis = transitionMillis,
-            zoomEnabled = zoomEnabled,
+            // A frame woken or returned from settings still paused shows its photo still.
+            zoomEnabled = zoomEnabled && !isPausedByViewer,
             zoomDurationMillis = (serverSettings.interval * 1_000).toLong(),
             zoomFramesPerSecond = preferences.zoomFrameRate,
             transitionFramesPerSecond = preferences.transitionFrameRate,
