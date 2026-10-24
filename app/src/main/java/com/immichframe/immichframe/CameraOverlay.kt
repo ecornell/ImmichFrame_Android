@@ -159,6 +159,9 @@ internal class CameraOverlay(
         val client: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
+            // The URL was checked against the Home Assistant URL; a redirect could leave it.
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build()
     }
 }
