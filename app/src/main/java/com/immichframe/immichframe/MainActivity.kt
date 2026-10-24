@@ -41,6 +41,7 @@ import androidx.core.view.WindowCompat
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import okhttp3.HttpUrl
+import java.lang.ref.WeakReference
 import java.util.Calendar
 import kotlinx.coroutines.*
 import androidx.lifecycle.lifecycleScope
@@ -96,19 +97,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun setPaused(paused: Boolean) = runOnUiThread {
-                if (useWebView) {
-                    // The web page's pause state is not observable; track the last request.
-                    if (remoteState.snapshot().paused == paused) return@runOnUiThread
-                    pauseAction()
-                    remoteState.update { it.copy(paused = paused) }
-                } else if (paused == isImageTimerRunning) {
-                    // Native playback is paused exactly when its timer is stopped.
-                    pauseAction()
-                }
+                // The web page's pause state is not observable, so its last toggle is tracked instead.
+                val current = if (useWebView) remoteState.snapshot().paused else slideshow.isPausedByViewer
+                if (paused != current) pauseAction()
             }
 
             override fun togglePaused() {
-                runOnUiThread { setPaused(if (useWebView) !remoteState.snapshot().paused else isImageTimerRunning) }
+                runOnUiThread { setPaused(if (useWebView) !remoteState.snapshot().paused else !slideshow.isPausedByViewer) }
             }
 
             override fun setBrightness(brightness: Float?) {
@@ -118,7 +113,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun next() = runOnUiThread { nextAction() }
             override fun previous() = runOnUiThread { previousAction() }
-            override fun refresh() = runOnUiThread { nextAction() }
+            override fun refresh() = runOnUiThread { refreshAction() }
             override fun openSettings() = runOnUiThread { settingsAction(authorizedOverride = true) }
             override fun notify(notification: FrameNotification) = runOnUiThread { showNotification(notification) }
             override fun showCamera(request: CameraRequest): Boolean {
@@ -150,13 +145,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        override fun onPlaybackStarted() {
-            remoteState.update { it.copy(paused = false) }
-        }
-
-        override fun onPlaybackStopped() {
-            // Also called when a WebView session replaces native playback; its pause is tracked apart.
-            if (!useWebView) remoteState.update { it.copy(paused = true) }
+        override fun onPauseChanged(paused: Boolean) {
+            // A WebView session's pause is tracked apart, in pauseAction.
+            if (!useWebView) remoteState.update { it.copy(paused = paused) }
         }
 
         override fun onPhotoShown(images: List<Helpers.PreparedImage>, source: String, frame: Bitmap) =
@@ -211,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         //force dark mode
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
+        finishPreviousInstance()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.main_view)
@@ -296,7 +288,6 @@ class MainActivity : AppCompatActivity() {
             it.copy(
                 presentationMode = if (useWebView) "webview" else "native",
                 version = appVersionName(),
-                paused = !isImageTimerRunning,
                 displayActive = isFrameInactive != true,
             )
         }
@@ -399,6 +390,8 @@ class MainActivity : AppCompatActivity() {
             web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
             dispatchKeyEvent(event)
+            // The web slideshow resumes on next and previous, as the native one does.
+            remoteState.update { it.copy(paused = false) }
         } else {
             slideshow.previous()
         }
@@ -410,10 +403,16 @@ class MainActivity : AppCompatActivity() {
             web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
             dispatchKeyEvent(event)
+            remoteState.update { it.copy(paused = false) }
         } else {
             slideshow.next()
         }
-        remoteState.update { it.copy(paused = false) }
+    }
+
+    /** Reloads the server settings and starts a new playback session (or reloads the page). */
+    private fun refreshAction() {
+        if (isFrameInactive == true) return
+        loadSettings()
     }
 
     private fun pauseAction() {
@@ -422,10 +421,11 @@ class MainActivity : AppCompatActivity() {
             web.view?.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SPACE)
             dispatchKeyEvent(event)
+            remoteState.update { it.copy(paused = !it.paused) }
         } else {
+            // Reports the change through the slideshow host's onPauseChanged.
             slideshow.togglePause()
         }
-        if (!useWebView) remoteState.update { it.copy(paused = !isImageTimerRunning) }
     }
 
     private fun settingsAction(authorizedOverride: Boolean = false) {
@@ -815,10 +815,8 @@ class MainActivity : AppCompatActivity() {
         if (::videoPlayer.isInitialized) videoPlayer.release()
         if (::web.isInitialized) web.destroy()
         super.onDestroy()
-        rpcServer?.stop()
-        rpcServer = null
-        mqttClient?.stop()
-        mqttClient = null
+        stopRemoteInterfaces()
+        if (liveInstance?.get() === this) liveInstance = null
         if (::slideshow.isInitialized) slideshow.destroy()
         unregisterReceiver(screenStateReceiver)
         handler.removeCallbacksAndMessages(null)
@@ -840,7 +838,33 @@ class MainActivity : AppCompatActivity() {
         hideSystemUI()
     }
 
+    /**
+     * singleTask does not guarantee one instance: on the WF1561 (Android 8.1) a second one started
+     * in its own task and ran for days beside the first, each with a slideshow and an MQTT client
+     * under the same client id, so the broker evicted one for the other about every second. The
+     * newest instance is the one in front, so it keeps the frame; the older one releases the RPC
+     * port and MQTT client id first, so this one can take them over.
+     */
+    private fun finishPreviousInstance() {
+        val previous = liveInstance?.get()
+        liveInstance = WeakReference(this)
+        if (previous == null || previous === this || previous.isDestroyed) return
+        Log.w("MainActivity", "Finishing a second MainActivity instance")
+        previous.stopRemoteInterfaces()
+        previous.finish()
+    }
+
+    private fun stopRemoteInterfaces() {
+        rpcServer?.stop()
+        rpcServer = null
+        mqttClient?.stop()
+        mqttClient = null
+        remoteConfigurationKey = null
+    }
+
     private fun configureRemoteInterfaces() {
+        // A finishing duplicate has handed the interfaces to the instance that replaced it.
+        if (isFinishing) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         val rpcEnabled = prefs.getBoolean("rpcEnabled", false)
         val token = prefs.getString("rpcToken", "").orEmpty()
@@ -849,7 +873,7 @@ class MainActivity : AppCompatActivity() {
         val mqttUsername = prefs.getString("mqttUsername", "").orEmpty()
         val mqttPassword = prefs.getString("mqttPassword", "").orEmpty()
         val deviceId = RemoteIdentity.getOrCreate(prefs)
-        val reportPhotoPreference = prefs.getBoolean("reportCurrentPhoto", true)
+        val reportPhotoPreference = prefs.getBoolean("reportCurrentPhoto", false)
         reportPhotoPeople = prefs.getBoolean("reportPhotoPeople", true)
         photoImageMode = PhotoImageMode.parse(prefs.getString("reportPhotoImage", null))
         // Without an interface to report to, the server is not asked for metadata (an album lookup).
@@ -864,8 +888,11 @@ class MainActivity : AppCompatActivity() {
 
         rpcServer?.stop()
         rpcServer = null
-        mqttClient?.stop()
+        val previousMqtt = mqttClient
         mqttClient = null
+        // Turned off: remove the device from Home Assistant rather than leave it unavailable
+        // there. A changed broker or setting just reconnects.
+        previousMqtt?.stop(removeFromHomeAssistant = !mqttEnabled || brokerUri.isBlank())
         var configured = true
 
         if (rpcEnabled && token.isNotBlank()) {
@@ -891,7 +918,7 @@ class MainActivity : AppCompatActivity() {
                 MqttSettings(
                     brokerUri, mqttUsername, mqttPassword, deviceId,
                     publishPhoto = reportPhotoPreference, photoImage = photoImageMode,
-                    hasTemperature = frameHasTemperature,
+                    hasTemperature = frameHasTemperature, model = Build.MODEL,
                 ),
                 remoteState,
                 remoteCommands,
@@ -1061,6 +1088,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
+        /** The newest instance; see [finishPreviousInstance]. */
+        var liveInstance: WeakReference<MainActivity>? = null
         const val NOTIFICATION_FADE_MILLIS = 300L
         const val HEALTH_SAMPLE_MILLIS = 60_000L
         const val KEY_DISPLAY_HOLD_ACTIVE = "displayHoldActive"

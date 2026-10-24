@@ -100,7 +100,11 @@ runbook for those steps.
   `RemoteControlTest` covers the photo discovery ids, `None` for unknown values, and the empty
   retained payloads that remove the photo entities when reporting is off. The opt-in image entity
   is checked the same way, and a second integration test publishes a retained photo image and
-  receives it again after a Home Assistant birth. The JPEG encoding itself (`PhotoImage`) uses
+  receives it again after a Home Assistant birth. A third presses *Use system brightness* (the
+  brightness state becomes `None`) and stops with removal, which empties the retained discovery
+  configs. `RemoteControlTest` also round-trips every brightness percent, checks the birth topic
+  follows the discovery prefix, the device model and diagnostic categories, and that removal
+  covers every config. The JPEG encoding itself (`PhotoImage`) uses
   Android bitmaps and is not covered by JVM tests: check the image, its size, and memory on a
   device.
 
@@ -168,7 +172,14 @@ target and a modern Android target. Do not run unqualified builds against produc
    MQTT availability stays online, `App started` is unchanged, playback is not reset), the clock
    uses the new locale on its next tick, a showing notification is resized, and the next slide
    fits the new window.
-10. Run existing renderer instrumentation tests and the established memory/network-loss soak.
+10. Home Assistant state: pause, turn the display off and on (remotely and by Active Times) and
+   open and leave the settings: **Playback** must stay off throughout and the photo must not
+   advance until next, previous or Playback on. A second instance must not survive: start one
+   with `am start -n <package>/com.immichframe.immichframe.MainActivity -f 0x18000000` and
+   check that `dumpsys activity activities` lists one MainActivity, logcat has "Finishing a
+   second MainActivity instance", the frame has one connection to the broker, and the broker
+   gets about one state publish per slide, not a full republish every second or two.
+11. Run existing renderer instrumentation tests and the established memory/network-loss soak.
    Screenshot, HOME, panel-path, and thermal checks remain deployment qualification requirements.
 
 TLS/secret-storage changes are deliberately outside this change. The activity and the

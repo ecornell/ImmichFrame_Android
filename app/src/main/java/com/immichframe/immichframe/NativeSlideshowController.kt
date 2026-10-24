@@ -76,9 +76,8 @@ internal class NativeSlideshowController(
         /** [hasImage] is whether a frame is on screen to fall back on. */
         fun onConnectionChanged(offline: Boolean, imageSucceeded: Boolean, hasImage: Boolean) = Unit
 
-        fun onPlaybackStarted() = Unit
-
-        fun onPlaybackStopped() = Unit
+        /** The viewer paused or resumed; see [isPausedByViewer]. */
+        fun onPauseChanged(paused: Boolean) = Unit
 
         /** Called on the main thread right after [frame] is presented, before it can be recycled. */
         fun onPhotoShown(images: List<Helpers.PreparedImage>, source: String, frame: Bitmap) = Unit
@@ -131,8 +130,21 @@ internal class NativeSlideshowController(
         SERVER_SETTINGS_REFRESH_MILLIS, ::refreshServerSettings,
     )
 
-    /** Playback is paused exactly when the image timer is stopped. */
+    /** Whether the image timer runs: false while paused, but also while stopped or asleep. */
     val isPlaying: Boolean get() = imageTimer.isRunning
+
+    /**
+     * The viewer's pause, which outlives [stop] and [start]: the display sleeping or the settings
+     * screen stops the timer without pausing, and a paused frame wakes or returns still paused.
+     */
+    var isPausedByViewer = false
+        private set
+
+    private fun setPausedByViewer(paused: Boolean) {
+        if (paused == isPausedByViewer) return
+        isPausedByViewer = paused
+        host.onPauseChanged(paused)
+    }
 
     /**
      * Starts a playback session against [url]. The last cached settings and image are shown at
@@ -194,6 +206,7 @@ internal class NativeSlideshowController(
     fun pauseZoom() = framePresenter.pauseZoom()
 
     fun next() {
+        setPausedByViewer(false)
         stopImageTimer()
         // Restart first: a prefetched video presents synchronously and arms its watchdog
         // through the running timer.
@@ -203,6 +216,7 @@ internal class NativeSlideshowController(
 
     fun previous() {
         val safePreviousImage = previousImage ?: return
+        setPausedByViewer(false)
         stopImageTimer()
         showImage(
             safePreviousImage,
@@ -215,12 +229,14 @@ internal class NativeSlideshowController(
 
     fun togglePause() {
         framePresenter.pauseZoom()
-        if (isPlaying) {
+        setPausedByViewer(!isPausedByViewer)
+        if (isPausedByViewer) {
             stopImageTimer()
-        } else {
+        } else if (!host.isInactive() && hasAppliedSettingsForSession && playbackSession.isCurrent(nativeSessionToken)) {
             startImageTimer()
             getNextImage()
         }
+        // Otherwise asleep, or between sessions: the next session starts playing.
     }
 
     /**
@@ -551,12 +567,10 @@ internal class NativeSlideshowController(
 
     private fun startImageTimer() {
         imageTimer.start()
-        host.onPlaybackStarted()
     }
 
     private fun stopImageTimer() {
         imageTimer.stop()
-        host.onPlaybackStopped()
         ++imageGeneration
         framePresenter.pauseZoom()
         videoPlayer?.pause()
@@ -720,7 +734,8 @@ internal class NativeSlideshowController(
                 if (cached != null) showStartupImage(cached, CurrentPhoto.SOURCE_CACHE) else getNextImage()
             }
         }
-        startImageTimer()
+        // The startup image shows either way; a paused viewer just gets no next slide.
+        if (!isPausedByViewer) startImageTimer()
         overlay.startClock()
         updateWeatherTimer()
     }

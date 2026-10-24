@@ -98,10 +98,23 @@ taken from the schedule at the time of the command.
 For automatic Home Assistant device/entity creation, enable **MQTT**, enter a broker URI such as
 `tcp://HOME-ASSISTANT-IP:1883` (or `ssl://HOST:8883` with a trusted certificate), and provide the
 broker credentials. The frame publishes retained MQTT Discovery definitions for display and
-playback switches, brightness, next/previous/refresh buttons, a notify entity,
-connectivity/offline sensors, presentation mode, and app version. It also publishes a retained availability state with an MQTT
+playback switches, brightness, next/previous/refresh/dismiss buttons, a *Use system brightness*
+button, a notify entity, a connectivity sensor, and diagnostic offline-fallback, presentation-mode
+and app-version sensors. It also publishes a retained availability state with an MQTT
 last will and republishes discovery/state after Home Assistant's `homeassistant/status` birth
 message. The generated device ID is stable across upgrades as long as application data is retained.
+
+- **Playback** is the viewer's pause, not whether slides are advancing: the display sleeping, the
+  settings screen or a camera keeps it as it was, and a frame paused at night wakes still paused.
+  Next and previous resume playback.
+- **Brightness** shows *unknown* while the frame follows the system brightness; *Use system
+  brightness* returns to it.
+- **Refresh** reloads the server settings and starts a new slideshow session (the page, in
+  WebView mode); next only advances.
+- Turning **MQTT** off in the settings, while the frame is connected to the broker, removes the
+  device and its entities from Home Assistant.
+  Clearing the app's data gives the frame a new device ID, which leaves the old device behind as
+  unavailable; delete it in Home Assistant.
 
 ### Health sensors
 
@@ -188,7 +201,7 @@ cannot be fetched, nothing is shown; a failed refresh keeps the last snapshot. I
 slideshow holds still underneath (no zoom, video or advancing) without being reported as paused;
 a WebView slideshow keeps running underneath. Like notifications, snapshots are best effort.
 
-With **Report current photo** on (the default once RPC or MQTT is enabled), the frame also reports
+With **Report current photo** on (off by default), the frame also reports
 the photo on screen. It asks the server for unformatted metadata (`includeMetadata=true`, ImmichFrame
 server newer than 1.0.37.3; older servers send none) and publishes two more entities:
 
