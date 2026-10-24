@@ -47,6 +47,13 @@ internal object FrameScheduleManager {
     }
 
     /**
+     * Whether Active Times has just entered an active period, such as the morning wake. Not at the
+     * first check after start ([wasActive] null), when there is no pause to keep anyway.
+     */
+    internal fun activePeriodBegan(wasActive: Boolean?, isActive: Boolean): Boolean =
+        wasActive == false && isActive
+
+    /**
      * Exact alarms need no grant before Android 12 (API 31). From then on they need
      * SCHEDULE_EXACT_ALARM (API 31-32, revocable) or USE_EXACT_ALARM (API 33+), which
      * [canScheduleExactAlarms] reports; without it the wake alarm is inexact but still fires in Doze.

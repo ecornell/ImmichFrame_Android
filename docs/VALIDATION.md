@@ -172,9 +172,10 @@ target and a modern Android target. Do not run unqualified builds against produc
    MQTT availability stays online, `App started` is unchanged, playback is not reset), the clock
    uses the new locale on its next tick, a showing notification is resized, and the next slide
    fits the new window.
-10. Home Assistant state: pause, turn the display off and on (remotely and by Active Times) and
-   open and leave the settings: **Playback** must stay off throughout and the photo must not
-   advance until next, previous or Playback on. A second instance must not survive: start one
+10. Home Assistant state: pause, turn the display off and on remotely and open and leave the
+   settings: **Playback** must stay off throughout and the photo must not advance until next,
+   previous or Playback on. Paused when Active Times sleeps the frame, it must wake playing at
+   the next active period, as must a frame held on remotely through it. A second instance must not survive: start one
    with `am start -n <package>/com.immichframe.immichframe.MainActivity -f 0x18000000` and
    check that `dumpsys activity activities` lists one MainActivity, logcat has "Finishing a
    second MainActivity instance", the frame has one connection to the broker, and the broker

@@ -105,8 +105,9 @@ last will and republishes discovery/state after Home Assistant's `homeassistant/
 message. The generated device ID is stable across upgrades as long as application data is retained.
 
 - **Playback** is the viewer's pause, not whether slides are advancing: the display sleeping, the
-  settings screen or a camera keeps it as it was, and a frame paused at night wakes still paused.
-  Next and previous resume playback.
+  settings screen, a camera or a remote display command keeps it as it was. Next and previous
+  resume playback, and so does the start of each Active Times period, so a stray pause lasts a
+  day at most.
 - **Brightness** shows *unknown* while the frame follows the system brightness; *Use system
   brightness* returns to it.
 - **Refresh** reloads the server settings and starts a new slideshow session (the page, in

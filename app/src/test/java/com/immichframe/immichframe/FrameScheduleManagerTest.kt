@@ -15,4 +15,13 @@ class FrameScheduleManagerTest {
         assertFalse(FrameScheduleManager.exactAlarmPermitted(31) { false })
         assertFalse(FrameScheduleManager.exactAlarmPermitted(34) { false })
     }
+
+    @Test fun onlyTheStartOfAnActivePeriodEndsAPause() {
+        assertTrue(FrameScheduleManager.activePeriodBegan(wasActive = false, isActive = true))
+        assertFalse(FrameScheduleManager.activePeriodBegan(wasActive = true, isActive = true))
+        assertFalse(FrameScheduleManager.activePeriodBegan(wasActive = true, isActive = false))
+        assertFalse(FrameScheduleManager.activePeriodBegan(wasActive = false, isActive = false))
+        // The first check after start, including starting inside an active period.
+        assertFalse(FrameScheduleManager.activePeriodBegan(wasActive = null, isActive = true))
+    }
 }

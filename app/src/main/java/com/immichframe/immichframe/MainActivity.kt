@@ -183,6 +183,8 @@ class MainActivity : AppCompatActivity() {
     }
     private var isFrameInactive: Boolean? = null
     private var isManualOverride = false
+    /** Active Times' own state at the last check, without remote holds; null until the first. */
+    private var lastScheduledActive: Boolean? = null
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -357,6 +359,7 @@ class MainActivity : AppCompatActivity() {
             handler.post(activeCheckRunnable)
         } else {
             handler.removeCallbacks(activeCheckRunnable)
+            lastScheduledActive = null
             if (!desiredActive(scheduledActive = true)) {
                 // A remote display-off with no schedule to end it holds until turned back on.
                 if (isFrameInactive != true) setFrameActive(false)
@@ -424,6 +427,18 @@ class MainActivity : AppCompatActivity() {
             remoteState.update { it.copy(paused = !it.paused) }
         } else {
             // Reports the change through the slideshow host's onPauseChanged.
+            slideshow.togglePause()
+        }
+    }
+
+    /** Resumes a viewer's pause, whether the frame is asleep, waking or held on. */
+    private fun endViewerPause() {
+        if (useWebView) {
+            if (!remoteState.snapshot().paused) return
+            // An asleep page was blanked and reloads playing on wake; an awake one needs the key.
+            if (isFrameInactive == true) remoteState.update { it.copy(paused = false) } else pauseAction()
+        } else if (slideshow.isPausedByViewer) {
+            // Asleep, this only clears the pause; the waking session then starts playing.
             slideshow.togglePause()
         }
     }
@@ -520,10 +535,14 @@ class MainActivity : AppCompatActivity() {
         // A physical/manual wake temporarily overrides the inactive schedule. Keep the regular
         // schedule check from putting the content pipeline back to sleep until the display is
         // turned off and onScreenTurnedOff() explicitly ends the override.
-        if (isManualOverride) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
-        val shouldBeActive = desiredActive(Helpers.isActiveNow(schedule, Calendar.getInstance()))
+        val scheduledActive = Helpers.isActiveNow(schedule, Calendar.getInstance())
+        // Each active period starts playing, so a stray pause lasts a day at most.
+        if (FrameScheduleManager.activePeriodBegan(lastScheduledActive, scheduledActive)) endViewerPause()
+        lastScheduledActive = scheduledActive
+        if (isManualOverride) return
+        val shouldBeActive = desiredActive(scheduledActive)
 
         if (shouldBeActive && isFrameInactive != false) {
             setFrameActive(true)
